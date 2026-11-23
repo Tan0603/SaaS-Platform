@@ -1,13 +1,8 @@
 # PLAN.md — SaaS Accounting System (phase by phase)
 
 Assessment: start 2026-11-23 → review 2026-11-30.
-Work **one phase at a time**. A phase is done only when every item in its **Exit criteria** is checked. Then commit, push, and get an Opus review before starting the next phase.
+Work **one phase at a time**. A phase is done only when every item in its **Exit criteria** is checked. Then commit, push, and review before starting the next phase.
 
-| Role | Model | Job in each phase |
-|---|---|---|
-| Planner / reviewer | Opus | Keeps this file up to date; reviews each phase's diff against the Exit criteria and section B |
-| Coder | Sonnet | Implements the phase's tasks |
-| Researcher / tester | Haiku | Looks up docs, runs `php artisan test` / `npm run build`, reports failures |
 
 ---
 
@@ -174,7 +169,7 @@ Tests — `Feature/Payments/PaymentProcessingTest`
 - [ ] DB constraint test: a direct update setting `amount_paid_cents > total_cents` throws
 
 Exit criteria
-- [ ] All payment tests are green; guardrail B is re-checked by the Opus review
+- [ ] All payment tests are green; guardrail B is re-checked in the review
 
 ---
 
@@ -288,7 +283,7 @@ Exit criteria
 
 Tasks
 - [ ] Full isolation sweep: one test per route that requests another tenant's resource → 404
-- [ ] Re-read section B line by line; Opus does a final review of the whole repository
+- [ ] Re-read section B line by line; final review of the whole repository
 - [ ] `README.md`: requirements, Docker setup, `/etc/hosts` note (or `*.localhost`), migrate + seed, demo logins, how to run the queue/scheduler/tests, design decisions summary
 - [ ] `docs/ERD.md` final; `docs/ARCHITECTURE.md` (tenancy, payment locking, overdue decision, email idempotency, caching, performance results)
 - [ ] Clean `git log`; final push
