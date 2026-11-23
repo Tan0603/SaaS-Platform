@@ -3,7 +3,7 @@
 Assessment: start 2026-11-23 → review 2026-11-30.
 
 How to use this file:
-1. Read **Part 1** first. It explains how the whole system works before any code exists.
+1. Read **Part 1** first. It explains how the whole system works before any code exists. **Section 1.8** explains the business flow (modelled on Bukku).
 2. Then build **one phase at a time** (Part 2). Each phase explains *why*, *how it works* and *what to do*, and ends with **Exit criteria**.
 3. A phase is done only when every exit criterion is checked. Then commit, push, review against **section 1.6**, and only then start the next phase.
 
@@ -83,10 +83,11 @@ tenants ─┬─< domains
 
 | Table | Important columns | Notes |
 |---|---|---|
-| `customers` | name, email, phone, address | email unique **per tenant** |
-| `invoices` | customer_id, number, issue_date, due_date, status, subtotal_cents, total_cents, amount_paid_cents, overdue_notified_at | `amount_paid_cents` is a stored copy of `SUM(payments)`, refreshed by one method only |
+| `tenants` | id, name, invoice_prefix, currency, default_payment_terms_days | company settings (B3, B5, B10) |
+| `customers` | name, email, phone, address, registration_no, payment_terms_days | email unique **per tenant**; archived = soft deleted |
+| `invoices` | customer_id, number, issue_date, due_date, state, status, subtotal_cents, total_cents, amount_paid_cents, issued_at, voided_at, overdue_notified_at | `amount_paid_cents` is a stored copy of `SUM(payments)`, refreshed by one method only |
 | `invoice_items` | invoice_id, description, quantity, unit_price_cents, line_total_cents | `line_total_cents` = quantity × unit price, computed by the server |
-| `payments` | invoice_id, amount_cents, paid_at, method, reference | `amount_cents > 0` enforced by the database |
+| `payments` | invoice_id, amount_cents, paid_at, method, reference, voided_at, void_reason | `amount_cents > 0` enforced by the database; voided payments don't count |
 | `invoice_email_logs` | invoice_id, event, sent_at | unique per (tenant, invoice, event) → stops duplicate emails |
 
 Why `tenant_id` is also on `invoice_items` and `payments` (not only on `invoices`): it lets every table be filtered directly by the global scope, so even a query that does not go through the invoice cannot leak data. It also makes per-tenant aggregation queries cheap.
@@ -107,7 +108,7 @@ Why `tenant_id` is also on `invoice_items` and `payments` (not only on `invoices
 ### Overdue is computed, not stored
 
 ```
-is_overdue = due_date < today  AND  status != 'paid'
+is_overdue = state = 'issued'  AND  due_date < today  AND  status != 'paid'
 ```
 It is worked out every time it is needed (model accessor + query scope). Why? A stored "overdue" flag would be wrong the moment a payment comes in or the date changes. Computing it means it can never be out of date.
 
@@ -138,6 +139,7 @@ The browser may show a live total preview, but the server **ignores any totals s
 - [ ] Overpayment is impossible (3 layers above)
 - [ ] Invoice totals always recalculated on the server
 - [ ] Only `Invoice::recalculatePaymentState()` writes `status` / `amount_paid_cents`
+- [ ] Drafts, void invoices and voided payments are excluded from every total (1.8)
 - [ ] Queued jobs run in the correct tenant (`QueueTenancyBootstrapper`)
 - [ ] The scheduler runs per tenant (`tenants:run`)
 
@@ -152,6 +154,52 @@ The browser may show a live total preview, but the server **ignores any totals s
 | Cache / queue / session | Redis | Required |
 | Money | integer cents | No rounding errors |
 | Code layout | Controllers → FormRequests → Actions / Services → Models | Clean, testable, reusable |
+
+## 1.8 Business flow — how a real accounting system works (modelled on Bukku)
+
+The assessment asks us to design the business logic ourselves, using Bukku (a Malaysian cloud accounting system) as the reference. Below is what Bukku does, what we copy, and what we deliberately leave out. Bukku facts come from its help centre (intercom.help/bukku); items marked *(our design)* are our own decisions where Bukku's behaviour could not be confirmed.
+
+### The sales flow end to end
+
+```
+ Customer (contact)            Invoice                                   Payment
+ ──────────────────     ─────────────────────────────────────     ─────────────────────
+ name, email, TIN,      DRAFT ──issue──► ISSUED ──────────► (paid)   recorded against the
+ payment terms   ──►    (no number,      (gets IV-00001,             invoice; can be VOIDED
+ (e.g. 30 days)         editable,        emailed to customer,         (never deleted)
+                        deletable)       counts in receivables)            │
+                                           │                               ▼
+                                           ├── void ──► VOID       invoice status recalculated:
+                                           │  (only if no active     unpaid → partial → paid
+                                           │   payments; keeps the
+                                           │   number, never deleted) overdue = issued + past due + not paid
+```
+
+### Decisions
+
+| # | Topic | How Bukku works | Our decision |
+|---|---|---|---|
+| B1 | **Invoice lifecycle** | Invoices can be saved and later sent; transactions are **voided** (and can be un-voided) rather than silently deleted | Two separate fields: `state` = `draft` / `issued` / `void` (document lifecycle) and `status` = `unpaid` / `partial` / `paid` (payment state, Section 1.5). A draft is a work in progress: no number, no email, not in dashboard/reports, cannot receive payments. *Issue* assigns the number and sends the email. |
+| B2 | **Delete vs void** | Must void before deleting; void keeps an audit trail | **Drafts** can be deleted. **Issued** invoices are never deleted, only **voided** (keeps the number sequence gap-free and the history auditable). Voiding requires every payment on it to be voided first. Void invoices are excluded from all totals. |
+| B3 | **Invoice numbers** | Default format `IV-00001`, customisable per company | Format `{prefix}{5 digits}` e.g. `IV-00001`. Prefix stored per tenant (`tenants.invoice_prefix`, default `IV-`). Number assigned **at issue time**, so deleted drafts never leave gaps. |
+| B4 | **Editing** | — *(our design)* | Draft: freely editable. Issued with **no active payments**: editable (totals recalculated). Issued **with payments**: locked; void the payments first. This is simpler and safer than allowing the total to change under a payment. |
+| B5 | **Payment terms → due date** | Payment terms are a per-contact default that overrides the company default | `customers.payment_terms_days` (0 = due on receipt, 7, 14, 30, 60; default 30 from `tenants.default_payment_terms_days`). The invoice form pre-fills `due_date = issue_date + terms`; the user can change it. |
+| B6 | **Recording payments** | "Add Payment" on the invoice, or a separate Sales Payment that can cover several invoices | We record payments **from the invoice** (one payment → one invoice). Multi-invoice allocation is out of scope and listed as a future improvement. Fields: date, amount, method (`cash`, `bank_transfer`, `cheque`, `card`, `e_wallet`), reference no. |
+| B7 | **Overpayment** | Bukku accepts the extra money as customer credit to refund or offset later | The spec says overpayment must be **impossible**, so we **block** it (3 layers, Section 1.5). We note customer credit as a future improvement in the README. |
+| B8 | **Undoing a payment** | Transactions are voided, not deleted | Payments are **voided** (`voided_at`, `void_reason`), never deleted. Voided payments are excluded from `SUM`, and `recalculatePaymentState()` runs again (e.g. `paid` → `partial`). The history stays visible with a "Void" badge. |
+| B9 | **Customers** | Contact has default terms, currency, TIN (needed for e-invoice) | Fields: name, email, phone, billing address, `registration_no` (SSM/TIN, optional), `payment_terms_days`. A customer with invoices cannot be deleted, only **archived** (soft delete): hidden from the invoice customer picker, history kept, can be restored. |
+| B10 | **Currency & tax** | Multi-currency and SST tax codes | Single currency per tenant (`tenants.currency`, default `MYR`). No tax (SST) in scope; `InvoiceCalculator` is the single place to add it later. |
+| B11 | **Emails** | Invoice sent on "save and send"; automatic reminders before due and when overdue; email tracker on the invoice | Emails: **invoice issued** (on issue) and **overdue reminder** (daily job). Optional stretch: **payment receipt**. The invoice page shows an email history from `invoice_email_logs`. |
+| B12 | **Multi-company** | One login can own several companies, switched from a dropdown | Spec model: each user belongs to **one** tenant and reaches it via its subdomain. Switching companies is out of scope. |
+| B13 | **Reports** | Standard accounting reports | Sales report, **Receivables aging** (outstanding invoices bucketed Current / 1–30 / 31–60 / 61–90 / 90+ days overdue), Customer summary. Only `issued` invoices and non-voided payments count. |
+
+### What this changes in the rules
+
+- **Overdue:** `state = issued AND due_date < today AND status != paid`.
+- **Everything that sums money** (dashboard, reports) uses `state = issued` invoices and `voided_at IS NULL` payments only.
+- **Payment allowed only when** `state = issued` and `status != paid`.
+- **`recalculatePaymentState()`** sums only non-voided payments.
+
 
 ---
 
@@ -281,16 +329,17 @@ Browsers resolve `*.localhost` to 127.0.0.1 automatically, so `acme.localhost` w
 
 | Table | Columns | Indexes & constraints |
 |---|---|---|
-| `customers` | id, tenant_id, name, email (nullable), phone, address (text), timestamps, soft deletes | `INDEX(tenant_id, name)`, `UNIQUE(tenant_id, email)` |
-| `invoices` | id, tenant_id, customer_id, sequence (int), number (`INV-000001`), issue_date, due_date, status (default `unpaid`), subtotal_cents, total_cents, amount_paid_cents (default 0), overdue_notified_at (nullable), timestamps | `UNIQUE(tenant_id, sequence)`, `UNIQUE(tenant_id, number)`, `INDEX(tenant_id, status, due_date)`, `INDEX(tenant_id, issue_date)`, `INDEX(tenant_id, customer_id)`, `CHECK(amount_paid_cents BETWEEN 0 AND total_cents)`, `CHECK(due_date >= issue_date)`, `CHECK(status IN ('unpaid','partial','paid'))` |
+| `tenants` (add columns) | invoice_prefix (default `IV-`), currency (default `MYR`), default_payment_terms_days (default 30) | — |
+| `customers` | id, tenant_id, name, email (nullable), phone, address (text), registration_no (nullable), payment_terms_days (default 30), timestamps, soft deletes | `INDEX(tenant_id, name)`, `UNIQUE(tenant_id, email)`, `CHECK(payment_terms_days BETWEEN 0 AND 365)` |
+| `invoices` | id, tenant_id, customer_id, sequence (int, nullable until issued), number (`IV-00001`, nullable until issued), issue_date, due_date, state (default `draft`), status (default `unpaid`), subtotal_cents, total_cents, amount_paid_cents (default 0), issued_at, voided_at, void_reason, overdue_notified_at (all nullable), timestamps | `UNIQUE(tenant_id, sequence)`, `UNIQUE(tenant_id, number)`, `INDEX(tenant_id, state, status, due_date)`, `CHECK(state IN ('draft','issued','void'))`, `CHECK(state = 'draft' OR number IS NOT NULL)`, `INDEX(tenant_id, issue_date)`, `INDEX(tenant_id, customer_id)`, `CHECK(amount_paid_cents BETWEEN 0 AND total_cents)`, `CHECK(due_date >= issue_date)`, `CHECK(status IN ('unpaid','partial','paid'))` |
 | `invoice_items` | id, tenant_id, invoice_id (cascade), position, description, quantity `decimal(10,2)`, unit_price_cents, line_total_cents | `INDEX(invoice_id)`, `CHECK(quantity > 0)`, `CHECK(unit_price_cents >= 0)` |
-| `payments` | id, tenant_id, invoice_id (restrict), amount_cents, paid_at (date), method (`cash`/`bank_transfer`/`card`/`other`), reference (nullable), timestamps | `INDEX(tenant_id, invoice_id)`, `INDEX(tenant_id, paid_at)`, `CHECK(amount_cents > 0)` |
+| `payments` | id, tenant_id, invoice_id (restrict), amount_cents, paid_at (date), method (`cash`/`bank_transfer`/`cheque`/`card`/`e_wallet`), reference (nullable), voided_at, void_reason (nullable), timestamps | `INDEX(tenant_id, invoice_id)`, `INDEX(tenant_id, paid_at)`, `CHECK(amount_cents > 0)` |
 | `invoice_email_logs` | id, tenant_id, invoice_id, event, sent_at (nullable), timestamps | `UNIQUE(tenant_id, invoice_id, event)` |
 
 All `tenant_id` columns: `foreignId`-style string FK → `tenants.id`, cascade on delete. `CHECK` constraints are added with `DB::statement('ALTER TABLE … ADD CONSTRAINT …')`.
 
 **Steps — code**
-1. `app/Enums/InvoiceStatus.php` (`Unpaid`, `Partial`, `Paid`) with a `label()` method; `app/Enums/InvoiceEmailEvent.php` (`Created`, `Overdue`); `app/Enums/PaymentMethod.php`.
+1. `app/Enums/InvoiceState.php` (`Draft`, `Issued`, `Void`), `app/Enums/InvoiceStatus.php` (`Unpaid`, `Partial`, `Paid`) with a `label()` method; `app/Enums/InvoiceEmailEvent.php` (`Issued`, `Overdue`); `app/Enums/PaymentMethod.php`.
 2. Models with `BelongsToTenant`, `$fillable`, `casts()` (dates, enums), relationships:
    - `Customer hasMany Invoice`
    - `Invoice belongsTo Customer`, `hasMany InvoiceItem` (ordered by position), `hasMany Payment`
@@ -298,14 +347,15 @@ All `tenant_id` columns: `foreignId`-style string FK → `tenants.id`, cascade o
 3. On `Invoice`:
    ```php
    public function scopeOverdue(Builder $q): void {
-       $q->whereDate('due_date', '<', today())->where('status', '!=', InvoiceStatus::Paid);
+       $q->where('state', InvoiceState::Issued)->whereDate('due_date', '<', today())->where('status', '!=', InvoiceStatus::Paid);
    }
-   public function scopeOutstanding(Builder $q): void { $q->where('status', '!=', InvoiceStatus::Paid); }
+   public function scopeIssued(Builder $q): void { $q->where('state', InvoiceState::Issued); }
+   public function scopeOutstanding(Builder $q): void { $q->issued()->where('status', '!=', InvoiceStatus::Paid); }
 
    protected function isOverdue(): Attribute {      // $invoice->is_overdue
-       return Attribute::get(fn () => $this->status !== InvoiceStatus::Paid && $this->due_date->lt(today()));
+       return Attribute::get(fn () => $this->state === InvoiceState::Issued && $this->status !== InvoiceStatus::Paid && $this->due_date->lt(today()));
    }
-   protected function displayStatus(): Attribute { /* 'overdue' if is_overdue, else status */ }
+   protected function displayStatus(): Attribute { /* 'draft' / 'void' from state; else 'overdue' if is_overdue; else status */ }
    protected function balanceCents(): Attribute { /* total_cents - amount_paid_cents */ }
    ```
 4. Factories: `TenantFactory`, `UserFactory`, `CustomerFactory`, `InvoiceFactory` (states `paid()`, `partial()`, `overdue()`, `withItems(int $n)` — the states must keep totals and payments consistent), `InvoiceItemFactory`, `PaymentFactory`.
@@ -326,7 +376,7 @@ All `tenant_id` columns: `foreignId`-style string FK → `tenants.id`, cascade o
 
 ## Phase 3 — Customer management
 
-**Goal:** list, search, create, view, edit and delete customers.
+**Goal:** list, search, create, view, edit and archive customers (Section 1.8 B9).
 
 **Why:** the simplest CRUD — it sets the pattern (controller → FormRequest → Inertia page) and the shared Vue components every later screen reuses.
 
@@ -354,14 +404,15 @@ UX states the spec asks for:
    'email' => ['nullable','email', Rule::unique('customers')->where('tenant_id', tenant('id'))->ignore($this->customer)],
    ```
 3. `CustomerPolicy` — extra safety: `$user->tenant_id === $customer->tenant_id`.
-4. `destroy`: refuse if the customer has invoices (error toast); otherwise soft delete.
-5. Shared Vue: `DataTable.vue`, `Pagination.vue`, `EmptyState.vue`, `FlashToast.vue`, error page for 403/404/500 (registered in `bootstrap/app.php` → `withExceptions`).
+4. `destroy` = **archive** (soft delete): allowed even with invoices; the history stays. Archived customers are hidden from the list (filter "Show archived") and from the invoice customer picker. `restore` route brings one back.
+5. Form fields include `registration_no` and `payment_terms_days` (select: Due on receipt / 7 / 14 / 30 / 60 days).
+6. Shared Vue: `DataTable.vue`, `Pagination.vue`, `EmptyState.vue`, `FlashToast.vue`, error page for 403/404/500 (registered in `bootstrap/app.php` → `withExceptions`).
 6. Pages: `customers/Index.vue`, `Create.vue`, `Edit.vue`, `Show.vue` (Show lists that customer's invoices).
 
 **Tests** — `tests/Feature/Customers/CustomerManagementTest.php`
 - create / update / delete happy paths
 - validation: name required, invalid email, email duplicated within the same tenant (but allowed in another tenant)
-- customer with invoices cannot be deleted
+- archiving a customer with invoices keeps the invoices; archived customer cannot be picked for a new invoice; restore works
 - another tenant's customer → 404 on show, edit, update, delete
 
 **Exit criteria**
@@ -372,7 +423,7 @@ UX states the spec asks for:
 
 ## Phase 4 — Invoices with line items
 
-**Goal:** create, edit, view and delete invoices with several line items; totals always correct.
+**Goal:** create drafts, issue, edit, void and view invoices with several line items; totals always correct (lifecycle in Section 1.8 B1–B5).
 
 **Why:** "invoice totals are inconsistent" is an automatic fail.
 
@@ -390,7 +441,7 @@ Quantity has 2 decimals, so to stay in integer maths: `qty_hundredths = quantity
 *Money input:* the user types `"125.50"`; the FormRequest validates it with a regex
 (`^\d+(\.\d{1,2})?$`) and converts the string to `12550` cents without using floats.
 
-*Invoice numbers:* per tenant, sequential, no gaps or duplicates even when two invoices are created at the same moment. Inside the transaction we lock the tenant's latest invoice row (`lockForUpdate`), take `max(sequence) + 1`, and the `UNIQUE(tenant_id, sequence)` index is the safety net.
+*Invoice numbers:* per tenant, `IV-00001` format with the tenant's prefix, assigned **when the invoice is issued**, sequential, no gaps or duplicates even when two invoices are issued at the same moment. Inside the transaction we lock the tenant's latest invoice row (`lockForUpdate`), take `max(sequence) + 1`, and the `UNIQUE(tenant_id, sequence)` index is the safety net.
 
 *Create flow:*
 ```
@@ -400,9 +451,11 @@ StoreInvoiceRequest (validate) → InvoiceData DTO → CreateInvoiceAction:
   → Observer queues "invoice created" email after commit (Phase 7)
 ```
 
-*Edit rules:* the new total may not be lower than what has already been paid. Editing replaces all items, recalculates totals, then calls `recalculatePaymentState()` (e.g. a `paid` invoice whose total goes up becomes `partial`).
+*Lifecycle:* the form has two buttons, **Save as draft** and **Save & issue**. `IssueInvoiceAction` (in a transaction): lock, assign the next number, set `state = issued`, `issued_at = now()`, then queue the "invoice issued" email after commit. Due date is pre-filled from the customer's payment terms (B5).
 
-*Delete rule:* only invoices with no payments can be deleted.
+*Edit rules (B4):* drafts are freely editable. Issued invoices are editable only while they have **no active payments**; with payments the edit button is hidden and the server returns 403 (`InvoicePolicy::update`). Editing replaces all items and recalculates totals.
+
+*Delete / void (B2):* drafts can be deleted. Issued invoices can only be **voided** (`VoidInvoiceAction`, requires a reason and no active payments). Void invoices keep their number and stay visible with a "Void" badge.
 
 **Steps**
 1. `app/Services/InvoiceCalculator.php` + `app/Support/Money.php` (string ↔ cents helpers).
@@ -418,12 +471,12 @@ StoreInvoiceRequest (validate) → InvoiceData DTO → CreateInvoiceAction:
    'items.*.unit_price'  => ['required','regex:/^\d+(\.\d{1,2})?$/'],
    ```
    Any `subtotal` / `total` field sent by the browser is simply not in the rules, so it is dropped.
-4. `CreateInvoiceAction`, `UpdateInvoiceAction`, `DeleteInvoiceAction`.
+4. `CreateInvoiceAction`, `UpdateInvoiceAction`, `IssueInvoiceAction`, `VoidInvoiceAction`, `DeleteDraftInvoiceAction`; `InvoicePolicy` (`update`, `issue`, `void`, `delete`).
 5. `Invoice::recalculatePaymentState()` (also used by payments in Phase 5).
 6. `InvoiceController`:
-   - `index`: filter by status (`unpaid`/`partial`/`paid`/`overdue`), customer, date; `with('customer:id,name')`; paginate
+   - `index`: filter by `draft`/`unpaid`/`partial`/`paid`/`overdue`/`void`, customer, date; `with('customer:id,name')`; paginate
    - `show`: `load(['items', 'payments' => fn ($q) => $q->latest('paid_at')])`
-7. Vue: `InvoiceItemsEditor.vue` (add/remove rows, live total preview), `StatusBadge.vue` (unpaid grey, partial amber, paid green, overdue red), `composables/useMoney.ts` (format cents for display), pages `invoices/Index.vue`, `Create.vue`, `Edit.vue`, `Show.vue`.
+7. Vue: `InvoiceItemsEditor.vue` (add/remove rows, live total preview), `StatusBadge.vue` (draft outline, unpaid grey, partial amber, paid green, overdue red, void struck-through), `composables/useMoney.ts` (format cents for display), pages `invoices/Index.vue`, `Create.vue`, `Edit.vue`, `Show.vue`.
 
 **Tests**
 - `tests/Unit/InvoiceCalculatorTest.php`: one item; several items; decimal quantity (1.5 × 3.33); rounding half up; zero price
@@ -433,8 +486,11 @@ StoreInvoiceRequest (validate) → InvoiceData DTO → CreateInvoiceAction:
   - validation: no items, `due_date` before `issue_date`, negative price, zero quantity
   - a customer from another tenant → validation error
   - invoice numbers are sequential per tenant (A: 1, 2 · B: 1)
-  - editing below the paid amount is rejected; editing a paid invoice upward → `partial`
-  - an invoice with payments cannot be deleted
+  - draft has no number; issuing assigns `IV-00001`, `IV-00002` …; deleting a draft leaves no gap
+  - due date defaults to issue date + customer payment terms
+  - an issued invoice with payments cannot be edited (403); without payments it can
+  - issued invoices cannot be deleted; voiding needs no active payments; void invoices are excluded from totals
+  - a draft cannot receive payments and sends no email
 
 **Exit criteria**
 - [ ] Multi-item invoices can be created, edited and viewed in the browser
@@ -457,7 +513,8 @@ public function execute(int $invoiceId, PaymentData $data): Payment
         $invoice = Invoice::whereKey($invoiceId)->lockForUpdate()->firstOrFail();
 
         // 2. fresh total from the payments table (not the stored copy)
-        $paid    = (int) $invoice->payments()->sum('amount_cents');
+        if ($invoice->state !== InvoiceState::Issued) throw InvoiceNotPayableException::make();
+        $paid    = (int) $invoice->payments()->whereNull('voided_at')->sum('amount_cents');
         $balance = $invoice->total_cents - $paid;
 
         // 3. business rule
@@ -483,7 +540,7 @@ With `lockForUpdate`, request 2 waits until request 1 commits, then reads balanc
 
 `recalculatePaymentState()`:
 ```php
-$paid = (int) $this->payments()->sum('amount_cents');
+$paid = (int) $this->payments()->whereNull('voided_at')->sum('amount_cents');
 $this->amount_paid_cents = $paid;
 $this->status = match (true) {
     $paid === 0                  => InvoiceStatus::Unpaid,
@@ -500,6 +557,7 @@ $this->save();
 4. Routes: `POST /invoices/{invoice}/payments` → `PaymentController@store`; `GET /payments` → `PaymentController@index` (all payments, `with('invoice.customer')`, date filter, paginated).
 5. `invoices/Show.vue`: summary (total / paid / balance), "Record payment" form (amount pre-filled with the balance, hidden when paid), payment history table.
 6. `payments/Index.vue`: payments screen required by the spec.
+7. `VoidPaymentAction` (B8): in a transaction, lock the invoice, set `voided_at` + `void_reason`, call `recalculatePaymentState()`. Route `POST /payments/{payment}/void`. Payments are never deleted.
 
 **Tests** — `tests/Feature/Payments/PaymentProcessingTest.php`
 - partial payment → `partial`, `amount_paid_cents` and balance correct
@@ -510,6 +568,8 @@ $this->save();
 - zero and negative amounts → rejected
 - payment on a paid invoice → rejected
 - payment on another tenant's invoice → 404
+- payment on a draft or void invoice → rejected
+- voiding a payment on a `paid` invoice → `partial`; voided payment excluded from totals and the balance can be paid again
 - direct DB update making `amount_paid_cents > total_cents` → throws (constraint)
 
 **Exit criteria**
@@ -586,7 +646,7 @@ $this->save();
       $log = InvoiceEmailLog::where([...])->lockForUpdate()->first();                   // inside a transaction
       if ($log->sent_at) return;                     // already sent → do nothing (duplicate run)
 
-      Mail::to($invoice->customer->email)->send(new InvoiceCreatedMail($invoice));
+      Mail::to($invoice->customer->email)->send(new InvoiceIssuedMail($invoice));
       $log->update(['sent_at' => now()]);            // mark as sent
   }
   ```
@@ -595,13 +655,14 @@ $this->save();
 - **Retry-safe:** `$tries = 5`, `backoff = [10, 60, 300]` seconds, `ShouldBeUnique` with `uniqueId = "{tenant}:{invoice}:{event}"` to avoid piling up identical jobs; a `failed()` method logs the failure.
 
 **Steps**
-1. `app/Mail/InvoiceCreatedMail.php`, `InvoiceOverdueMail.php` + Markdown templates (invoice number, total, due date, balance).
+1. `app/Mail/InvoiceIssuedMail.php`, `InvoiceOverdueMail.php` + Markdown templates (invoice number, total, due date, balance).
 2. `app/Jobs/SendInvoiceEmail.php` as above.
-3. `app/Observers/InvoiceObserver.php` → `created()`: `SendInvoiceEmail::dispatch($invoice->id, InvoiceEmailEvent::Created)->afterCommit();`
+3. `IssueInvoiceAction` dispatches `SendInvoiceEmail::dispatch($invoice->id, InvoiceEmailEvent::Issued)->afterCommit();` (drafts never email).
 4. Confirm `QueueTenancyBootstrapper` is in `config/tenancy.php`.
+5. `invoices/Show.vue`: "Email history" panel from `invoice_email_logs` (like Bukku's email tracker).
 
 **Tests** — `tests/Feature/Jobs/SendInvoiceEmailTest.php`
-- creating an invoice queues exactly one `SendInvoiceEmail` (`Queue::fake()`)
+- issuing an invoice queues exactly one `SendInvoiceEmail`; saving a draft queues none (`Queue::fake()`)
 - running the job twice → exactly one email (`Mail::fake()`)
 - a log row with `sent_at = null` (simulated crash) → the next run sends
 - **tenant context:** dispatch in tenant A on a real (database) queue, end tenancy, process the job with `queue:work --once`, assert it read tenant A's invoice and `tenant('id') === 'A'` inside the job
@@ -609,7 +670,7 @@ $this->save();
 - a customer without email → no email, no error
 
 **Exit criteria**
-- [ ] Creating an invoice in the browser → email appears in Mailpit (via the `queue` container)
+- [ ] Issuing an invoice in the browser → email appears in Mailpit (via the `queue` container)
 - [ ] Tests green
 
 ---
@@ -637,7 +698,7 @@ SELECT
      WHERE tenant_id = :tenant AND paid_at >= date_trunc('month', CURRENT_DATE))                              AS month_revenue
 FROM invoices WHERE tenant_id = :tenant;
 ```
-(Written with the query builder on the tenant-scoped models, so `tenant_id` comes from the scope.)
+(Written with the query builder on the tenant-scoped models, so `tenant_id` comes from the scope. The real query also adds `state = 'issued'` to the invoice filters and `voided_at IS NULL` to the payments sub-query — B1, B8.)
 
 **Caching:**
 - `Cache::remember('dashboard:stats:'.today()->toDateString(), 600, fn () => …)`. `CacheTenancyBootstrapper` automatically separates the cache per tenant, so Acme and Globex can never read each other's numbers. The date in the key means overdue numbers refresh at midnight.
@@ -669,8 +730,8 @@ FROM invoices WHERE tenant_id = :tenant;
 | Report | Input | SQL idea | Output |
 |---|---|---|---|
 | Sales | `from`, `to` | invoices with `issue_date` in range, `GROUP BY date_trunc('month', issue_date)` | per month: invoice count, total billed, total collected; grand total row |
-| Outstanding invoices | optional customer, "overdue only" | `WHERE status <> 'paid' ORDER BY due_date` + join customer name | invoice, customer, due date, total, paid, balance, days overdue; paginated |
-| Customer summary | optional date range | `customers LEFT JOIN invoices … GROUP BY customers.id` | per customer: invoice count, billed, paid, balance, overdue amount; sortable, paginated |
+| Outstanding / receivables aging | optional customer, "overdue only" | `WHERE state = 'issued' AND status <> 'paid'`; aging bucket with `CASE WHEN CURRENT_DATE - due_date <= 0 THEN 'current' WHEN … <= 30 …` | (a) aging summary: balance per bucket Current / 1–30 / 31–60 / 61–90 / 90+; (b) invoice list: invoice, customer, due date, total, paid, balance, days overdue; paginated |
+| Customer summary | optional date range | `customers LEFT JOIN invoices (state = 'issued') … GROUP BY customers.id` | per customer: invoice count, billed, paid, balance, overdue amount; sortable, paginated |
 
 Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not rely on row-by-row PHP processing"). The indexes from Phase 2 (`tenant_id, issue_date`, `tenant_id, status, due_date`, `tenant_id, customer_id`) are what keep these fast.
 
@@ -681,7 +742,8 @@ Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not
 4. Pages `reports/Sales.vue`, `Outstanding.vue`, `CustomerSummary.vue` with date filters and loading/empty states.
 
 **Tests** — `tests/Feature/Reports/ReportsTest.php`
-- each report's totals match a known data set
+- each report's totals match a known data set; drafts and void invoices are excluded
+- aging buckets: invoices 0, 15, 45, 75, 120 days past due land in the right bucket
 - date boundaries are inclusive (invoices on `from` and `to` are counted)
 - only the current tenant's data appears
 - invalid range (`from > to`) → validation error
@@ -702,7 +764,7 @@ Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not
 
 **Steps**
 1. `DatabaseSeeder`: tenants `acme` (Acme Sdn Bhd) and `globex` (Globex Trading) + domains + one login each (`admin@acme.test` / `password`, `admin@globex.test` / `password`).
-2. `DemoTenantSeeder`: ~20 customers, ~50 invoices with a mix of unpaid/partial/paid/overdue.
+2. `DemoTenantSeeder`: ~20 customers, ~50 invoices with a mix of draft/unpaid/partial/paid/overdue/void and a few voided payments.
 3. `PerformanceSeeder` (per tenant): 500 customers, 5,000 invoices, ~15,000 items, ~5,000 payments.
 4. Consistency check + `EXPLAIN ANALYZE`; record before/after timings (with and without cache) in `docs/ARCHITECTURE.md`.
 5. Browse every page with strict mode on (Phase 0) → fix any N+1 problem by eager loading.
@@ -739,7 +801,7 @@ Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not
 SaaS-Platform/
 ├── app/
 │   ├── Actions/
-│   │   ├── Invoices/{CreateInvoiceAction,UpdateInvoiceAction,DeleteInvoiceAction}.php
+│   │   ├── Invoices/{CreateInvoiceAction,UpdateInvoiceAction,IssueInvoiceAction,VoidInvoiceAction,DeleteDraftInvoiceAction}.php
 │   │   └── Payments/RecordPaymentAction.php
 │   ├── Console/Commands/MarkOverdueInvoices.php
 │   ├── Data/{InvoiceData,InvoiceItemData,PaymentData}.php
@@ -750,7 +812,7 @@ SaaS-Platform/
 │   │   ├── Middleware/HandleInertiaRequests.php
 │   │   └── Requests/{Customers,Invoices,Payments,Reports}/…
 │   ├── Jobs/SendInvoiceEmail.php
-│   ├── Mail/{InvoiceCreatedMail,InvoiceOverdueMail}.php
+│   ├── Mail/{InvoiceIssuedMail,InvoiceOverdueMail}.php
 │   ├── Models/{Tenant,User,Customer,Invoice,InvoiceItem,Payment,InvoiceEmailLog}.php
 │   ├── Observers/{InvoiceObserver,PaymentObserver}.php
 │   ├── Policies/{CustomerPolicy,InvoicePolicy}.php
@@ -800,7 +862,11 @@ SaaS-Platform/
 | GET | `/dashboard` | `DashboardController` | `Dashboard` |
 | resource | `/customers` | `CustomerController` | `customers/*` |
 | resource | `/invoices` | `InvoiceController` | `invoices/*` |
+| POST | `/invoices/{invoice}/issue` | `InvoiceController@issue` | (redirect back) |
+| POST | `/invoices/{invoice}/void` | `InvoiceController@void` | (redirect back) |
+| POST | `/customers/{customer}/restore` | `CustomerController@restore` | (redirect back) |
 | POST | `/invoices/{invoice}/payments` | `PaymentController@store` | (redirect back) |
+| POST | `/payments/{payment}/void` | `PaymentController@void` | (redirect back) |
 | GET | `/payments` | `PaymentController@index` | `payments/Index` |
 | GET | `/reports/sales` | `ReportController@sales` | `reports/Sales` |
 | GET | `/reports/outstanding` | `ReportController@outstanding` | `reports/Outstanding` |
