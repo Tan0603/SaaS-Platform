@@ -407,7 +407,7 @@ UX states the spec asks for:
 4. `destroy` = **archive** (soft delete): allowed even with invoices; the history stays. Archived customers are hidden from the list (filter "Show archived") and from the invoice customer picker. `restore` route brings one back.
 5. Form fields include `registration_no` and `payment_terms_days` (select: Due on receipt / 7 / 14 / 30 / 60 days).
 6. Shared Vue: `DataTable.vue`, `Pagination.vue`, `EmptyState.vue`, `FlashToast.vue`, error page for 403/404/500 (registered in `bootstrap/app.php` → `withExceptions`).
-6. Pages: `customers/Index.vue`, `Create.vue`, `Edit.vue`, `Show.vue` (Show lists that customer's invoices).
+7. Pages: `customers/Index.vue`, `Create.vue`, `Edit.vue`, `Show.vue` (Show lists that customer's invoices).
 
 **Tests** — `tests/Feature/Customers/CustomerManagementTest.php`
 - create / update / delete happy paths
