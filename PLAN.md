@@ -818,7 +818,8 @@ Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not
 - invalid range (`from > to`) → validation error
 
 **Exit criteria**
-- [ ] Reports work in the browser with the performance seed · tests green
+- [x] Tests green (`tests/Feature/Reports/ReportsTest.php`, 25 tests)
+- [ ] Reports checked in the browser with the performance seed (pending Phase 10 seed)
 
 ---
 
