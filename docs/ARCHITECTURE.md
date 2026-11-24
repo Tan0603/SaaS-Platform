@@ -156,3 +156,19 @@ is over the 12 month buckets (zero-filling). Drafts, void invoices and voided pa
 **Live refresh.** `Dashboard.vue` uses Inertia's `usePoll(30000)` to reload only the `stats`, `charts` and `month` props
 every 30 seconds (paused while the tab is hidden). The server answers from the cache, so polling is cheap; a new
 payment or invoice flushes the cache and shows up on the next poll. The page shows both the data time and the last check.
+
+## Reports
+
+Three read-only reports (`App\Services\Reports\*`, served by `ReportController`). Every number is a SQL `SUM` / `COUNT`
+(with `FILTER`); the only PHP work is shaping rows for Inertia. All use the tenant-scoped Eloquent models, so each query
+carries `tenant_id = <current tenant>`; the one raw join (customers to invoices) repeats the tenant condition on the
+invoices side explicitly. Drafts, void invoices and voided payments never count (`state = 'issued'`;
+`amount_paid_cents` is written by `recalculatePaymentState()` from non-voided payments only). "Today" is bound from PHP,
+never `CURRENT_DATE`, so tests can freeze time. Money stays in integer cents. The existing indexes
+(`tenant_id, issue_date`; `tenant_id, state, status, due_date`; `tenant_id, customer_id`) cover these queries.
+
+| Report | Definition |
+|---|---|
+| Sales | issued invoices with `issue_date` in `[from, to]` (both inclusive; default = current month; max 2 years), grouped by `date_trunc('month', issue_date)`. Billed = `SUM(total)`, collected = `SUM(amount_paid)` of those same invoices (so a payment is attributed to the invoice's issue month, not its payment date), outstanding = billed - collected; plus a grand total row |
+| Outstanding | issued, status not paid, balance > 0; filters: customer (tenant-scoped `exists`), overdue only. Aging by `today - due_date`: Current (<= 0, includes due today), 1-30, 31-60, 61-90, 90+ (> 90), one `FILTER` query; list ordered by due date, paginated, customer eager loaded |
+| Customer summary | `customers LEFT JOIN invoices` (issued, optional `issue_date` range) `GROUP BY customer`: count, billed, paid, balance, overdue (unpaid balance with `due_date < today`). Sort column and direction come from a whitelist (validation rejects anything else). Customers with no invoices show zeros; archived customers only appear if they have invoices in range |

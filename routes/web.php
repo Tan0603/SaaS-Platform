@@ -4,6 +4,7 @@ use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\ReportController;
 use App\Http\Middleware\InitializeTenancyByUser;
 use Illuminate\Support\Facades\Route;
 
@@ -34,6 +35,10 @@ Route::middleware(['auth', InitializeTenancyByUser::class])->group(function () {
     Route::get('payments', [PaymentController::class, 'index'])->name('payments.index');
     Route::post('invoices/{invoice}/payments', [PaymentController::class, 'store'])->name('invoices.payments.store');
     Route::post('payments/{payment}/void', [PaymentController::class, 'void'])->name('payments.void');
+
+    Route::get('reports/sales', [ReportController::class, 'sales'])->name('reports.sales');
+    Route::get('reports/outstanding', [ReportController::class, 'outstanding'])->name('reports.outstanding');
+    Route::get('reports/customers', [ReportController::class, 'customers'])->name('reports.customers');
 
     require __DIR__.'/settings.php';
 });

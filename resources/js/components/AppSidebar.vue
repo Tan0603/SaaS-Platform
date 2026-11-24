@@ -4,7 +4,7 @@ import NavUser from '@/components/NavUser.vue';
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
 import { type NavItem } from '@/types';
 import { Link } from '@inertiajs/vue3';
-import { FileText, LayoutGrid, Users, Wallet } from 'lucide-vue-next';
+import { BarChart3, FileText, LayoutGrid, Users, Wallet } from 'lucide-vue-next';
 import AppLogo from './AppLogo.vue';
 
 const mainNavItems: NavItem[] = [
@@ -27,6 +27,16 @@ const mainNavItems: NavItem[] = [
         title: 'Payments',
         href: '/payments',
         icon: Wallet,
+    },
+    {
+        title: 'Report',
+        href: '/reports',
+        icon: BarChart3,
+        items: [
+            { title: 'Sales Report', href: '/reports/sales' },
+            { title: 'Outstanding Invoice Report', href: '/reports/outstanding' },
+            { title: 'Customer Invoice Summary', href: '/reports/customers' },
+        ],
     },
 ];
 </script>

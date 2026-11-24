@@ -19,6 +19,8 @@ export interface NavItem {
     href: string;
     icon?: LucideIcon;
     isActive?: boolean;
+    /** When set, the item is a dropdown group; `href` is the shared URL prefix used to highlight/open it. */
+    items?: NavItem[];
 }
 
 export interface SharedData {
