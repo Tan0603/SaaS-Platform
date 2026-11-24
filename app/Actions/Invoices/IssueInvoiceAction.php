@@ -2,7 +2,9 @@
 
 namespace App\Actions\Invoices;
 
+use App\Enums\InvoiceEmailEvent;
 use App\Enums\InvoiceState;
+use App\Jobs\SendInvoiceEmail;
 use App\Models\Invoice;
 use App\Models\Tenant;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -46,7 +48,9 @@ class IssueInvoiceAction
                 'issued_at' => now(),
             ])->save();
 
-            // Phase 7: dispatch the "invoice issued" email job here (after commit, idempotent per invoice + event).
+            // After commit: a rolled-back transaction (also an outer one, e.g. "Save & issue") queues nothing.
+            // Idempotency (one email per invoice + event) is enforced inside the job.
+            SendInvoiceEmail::dispatch($invoice->id, InvoiceEmailEvent::Issued)->afterCommit();
 
             return $invoice;
         });

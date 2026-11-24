@@ -19,6 +19,13 @@ interface Item {
     line_total_cents: number;
 }
 
+interface EmailLogRow {
+    id: number;
+    event: string;
+    queued_at: string;
+    sent_at: string | null;
+}
+
 interface PaymentRow {
     id: number;
     amount_cents: number;
@@ -46,11 +53,15 @@ const props = defineProps<{
         customer: { id: number; name: string; email: string | null };
         items: Item[];
         payments: PaymentRow[];
+        email_logs: EmailLogRow[];
     };
     can: { update: boolean; issue: boolean; void: boolean; delete: boolean; record_payment: boolean };
     methods: { value: string; label: string }[];
     today: string;
 }>();
+
+const emailEventLabels: Record<string, string> = { issued: 'Invoice issued', overdue: 'Overdue reminder' };
+const formatDateTime = (iso: string) => new Date(iso).toLocaleString();
 
 const title = props.invoice.number ?? 'Draft invoice';
 
@@ -284,6 +295,30 @@ function submitVoid() {
                 </table>
             </div>
             <EmptyState v-else title="No payments yet" description="Payments recorded against this invoice will appear here." />
+
+            <div class="grid gap-3">
+                <h2 class="text-lg font-semibold">Email history</h2>
+
+                <div v-if="invoice.email_logs.length" class="overflow-x-auto rounded-lg border">
+                    <table class="w-full text-sm">
+                        <thead class="bg-muted/50 text-left">
+                            <tr>
+                                <th class="p-2">Email</th>
+                                <th class="p-2">Queued</th>
+                                <th class="p-2">Sent</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="log in invoice.email_logs" :key="log.id" class="border-t">
+                                <td class="p-2">{{ emailEventLabels[log.event] ?? log.event }}</td>
+                                <td class="p-2">{{ formatDateTime(log.queued_at) }}</td>
+                                <td class="p-2">{{ log.sent_at ? formatDateTime(log.sent_at) : 'Pending' }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <EmptyState v-else title="No emails yet" description="Emails sent for this invoice will be listed here." />
+            </div>
         </div>
     </AppLayout>
 </template>
