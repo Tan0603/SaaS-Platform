@@ -25,3 +25,10 @@ export function lineTotalCents(quantity: string, unitPrice: string): number {
 
     return Math.floor((hundredths * price + 50) / 100);
 }
+
+/** Short form for chart axis ticks: "RM 1.2K", "RM 3M". Full precision stays in formatMoney (tooltips). */
+export function formatMoneyCompact(cents: number | null | undefined): string {
+    const value = (cents ?? 0) / 100;
+
+    return 'RM ' + value.toLocaleString('en-MY', { notation: 'compact', maximumFractionDigits: 1 });
+}

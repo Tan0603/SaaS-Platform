@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Enums\InvoiceEmailEvent;
 use App\Jobs\SendInvoiceEmail;
 use App\Models\Invoice;
+use App\Services\DashboardCache;
 use Illuminate\Console\Command;
 
 /**
@@ -42,7 +43,8 @@ class MarkOverdueInvoices extends Command
                 }
             });
 
-        // Phase 8: DashboardCache::flush() goes here (overdue numbers on the dashboard).
+        // saveQuietly() skips the observers, so drop the cached dashboard explicitly.
+        DashboardCache::flush();
 
         $this->info('Tenant '.tenant('id').": {$count} overdue invoice(s) queued for a reminder.");
 

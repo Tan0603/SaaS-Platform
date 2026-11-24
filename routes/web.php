@@ -1,11 +1,11 @@
 <?php
 
 use App\Http\Controllers\CustomerController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Middleware\InitializeTenancyByUser;
 use Illuminate\Support\Facades\Route;
-use Inertia\Inertia;
 
 /*
 |--------------------------------------------------------------------------
@@ -21,7 +21,7 @@ Route::redirect('/', '/dashboard')->name('home');
 require __DIR__.'/auth.php';
 
 Route::middleware(['auth', InitializeTenancyByUser::class])->group(function () {
-    Route::get('dashboard', fn () => Inertia::render('Dashboard'))->name('dashboard');
+    Route::get('dashboard', DashboardController::class)->name('dashboard');
 
     Route::resource('customers', CustomerController::class);
     Route::patch('customers/{customer}/restore', [CustomerController::class, 'restore'])->withTrashed()->name('customers.restore');

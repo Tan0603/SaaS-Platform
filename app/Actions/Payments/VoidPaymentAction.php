@@ -32,8 +32,6 @@ class VoidPaymentAction
 
             $invoice->recalculatePaymentState();
 
-            // Phase 8: forget the tenant's dashboard cache here (or via an observer).
-
             return $payment;
         });
     }
