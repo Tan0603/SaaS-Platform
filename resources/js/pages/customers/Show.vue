@@ -2,6 +2,7 @@
 import EmptyState from '@/components/EmptyState.vue';
 import FlashMessage from '@/components/FlashMessage.vue';
 import Pagination from '@/components/Pagination.vue';
+import StatusBadge from '@/components/StatusBadge.vue';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { formatMoney } from '@/lib/format';
@@ -36,15 +37,6 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Customers', href: '/customers' },
     { title: props.customer.name, href: '#' },
 ];
-
-const statusClass: Record<string, string> = {
-    paid: 'bg-green-100 text-green-800',
-    partial: 'bg-amber-100 text-amber-800',
-    unpaid: 'bg-slate-100 text-slate-800',
-    overdue: 'bg-red-100 text-red-800',
-    draft: 'bg-slate-100 text-slate-600',
-    void: 'bg-slate-200 text-slate-600',
-};
 </script>
 
 <template>
@@ -94,9 +86,7 @@ const statusClass: Record<string, string> = {
                             <td class="px-3 py-2">{{ invoice.issue_date }}</td>
                             <td class="px-3 py-2">{{ invoice.due_date }}</td>
                             <td class="px-3 py-2">
-                                <span class="rounded px-2 py-0.5 text-xs font-medium capitalize" :class="statusClass[invoice.display_status]">
-                                    {{ invoice.display_status }}
-                                </span>
+                                <StatusBadge :status="invoice.display_status" />
                             </td>
                             <td class="px-3 py-2 text-right">{{ formatMoney(invoice.total_cents) }}</td>
                             <td class="px-3 py-2 text-right">{{ formatMoney(invoice.balance_cents) }}</td>

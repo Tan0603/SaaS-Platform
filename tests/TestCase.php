@@ -31,7 +31,7 @@ abstract class TestCase extends BaseTestCase
      */
     protected function createTenant(string $id = 'acme'): Tenant
     {
-        $tenant = Tenant::query()->create(['id' => $id, 'name' => ucfirst($id).' Sdn Bhd']);
+        $tenant = Tenant::query()->create(['id' => $id, 'name' => ucfirst($id).' Sdn Bhd'])->fresh();   // fresh(): load the DB defaults (prefix, terms)
 
         return $tenant;
     }

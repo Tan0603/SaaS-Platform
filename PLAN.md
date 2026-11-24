@@ -15,9 +15,9 @@ How to use this file:
 | 1 — Multi-tenancy & login | ✅ Done | One site `localhost:8000`; tenant from logged-in user; 26 tests / 117 assertions green; Pint OK. Merged to staging (PR #2) |
 | 2 — Schema, models, factories | ✅ Done | 6 migrations with all indexes + CHECK constraints, enums, models, factories (consistent paid/partial/overdue states), `docs/ERD.md`; isolation + constraint tests green. Not committed yet |
 | 3 — Customers | ✅ Done | 57 tests / 319 assertions green (with Phase 2). CRUD + archive/restore + permanent delete (only when no invoices), tenant-scoped validation, policy, Vue pages + shared components; tenancy now initialised before route-model binding (priority fix in `bootstrap/app.php`). "Archived customer cannot be picked" test moves to Phase 4. Not committed yet |
-| 4 — Invoices | ⏭️ Next | |
+| 4 — Invoices | ✅ Done | Money, InvoiceCalculator (integer maths), DTOs, Create/Update/Issue/Void/DeleteDraft actions, `Invoice::recalculatePaymentState()`, InvoicePolicy, InvoiceController + Vue pages (Index/Form/Show, StatusBadge). 129 tests / 743 assertions green (with phases 1-3). Not committed yet |
 | 5 — Payments | ⬜ | |
-| 6 — Overdue & scheduler | ⬜ | |
+| 6 — Overdue & scheduler | 🟡 Partial | Overdue logic done (scope, accessor, list filter, badge, `OverdueLogicTest`, `docs/ARCHITECTURE.md`). `invoices:mark-overdue` command and scheduler pending with Phase 7 |
 | 7 — Queued emails | ⬜ | |
 | 8 — Dashboard & cache | ⬜ | |
 | 9 — Reports | ⬜ | |
@@ -516,7 +516,7 @@ StoreInvoiceRequest (validate) → InvoiceData DTO → CreateInvoiceAction:
   → Observer queues "invoice created" email after commit (Phase 7)
 ```
 
-*Lifecycle:* the form has two buttons, **Save as draft** and **Save & issue**. `IssueInvoiceAction` (in a transaction): lock, assign the next number, set `state = issued`, `issued_at = now()`, then queue the "invoice issued" email after commit. Due date is pre-filled from the customer's payment terms (B5).
+*Lifecycle:* the form has two buttons, **Save as draft** and **Save & issue**. `IssueInvoiceAction` (in a transaction): lock, assign the next number, set `state = issued`, `issued_at = now()`, then queue the "invoice issued" email after commit. Due date is pre-filled from the customer's payment terms (B5). An invoice with a total of 0.00 can be saved as a draft but **cannot be issued**: a payment must be > 0 and ≤ total, so it could never become paid and would turn overdue forever.
 
 *Edit rules (B4):* drafts are freely editable. Issued invoices are editable only while they have **no active payments**; with payments the edit button is hidden and the server returns 403 (`InvoicePolicy::update`). Editing replaces all items and recalculates totals.
 
@@ -558,7 +558,7 @@ StoreInvoiceRequest (validate) → InvoiceData DTO → CreateInvoiceAction:
   - a draft cannot receive payments and sends no email
 
 **Exit criteria**
-- [ ] Multi-item invoices can be created, edited and viewed in the browser
+- [x] Multi-item invoices can be created, edited and viewed in the browser
 - [ ] Tests green
 
 ---
