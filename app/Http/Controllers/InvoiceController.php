@@ -13,6 +13,7 @@ use App\Http\Requests\Invoices\UpdateInvoiceRequest;
 use App\Http\Requests\Invoices\VoidInvoiceRequest;
 use App\Models\Customer;
 use App\Models\Invoice;
+use App\Models\InvoiceEmailLog;
 use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Support\Money;
@@ -101,6 +102,7 @@ class InvoiceController extends Controller
         $invoice->load([
             'customer:id,name,email,deleted_at',
             'items',
+            'emailLogs' => fn ($query) => $query->latest('id'),
             'payments' => fn ($query) => $query->latest('paid_at')->latest('id'),
         ]);
 
@@ -126,6 +128,12 @@ class InvoiceController extends Controller
                     'quantity' => $item->quantity,
                     'unit_price_cents' => $item->unit_price_cents,
                     'line_total_cents' => $item->line_total_cents,
+                ])->values(),
+                'email_logs' => $invoice->emailLogs->map(fn (InvoiceEmailLog $log) => [
+                    'id' => $log->id,
+                    'event' => $log->event->value,
+                    'queued_at' => $log->created_at->toIso8601String(),
+                    'sent_at' => $log->sent_at?->toIso8601String(),
                 ])->values(),
                 'payments' => $invoice->payments->map(fn (Payment $payment) => [
                     'id' => $payment->id,

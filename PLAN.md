@@ -17,8 +17,8 @@ How to use this file:
 | 3 — Customers | ✅ Done | 57 tests / 319 assertions green (with Phase 2). CRUD + archive/restore + permanent delete (only when no invoices), tenant-scoped validation, policy, Vue pages + shared components; tenancy now initialised before route-model binding (priority fix in `bootstrap/app.php`). "Archived customer cannot be picked" test moves to Phase 4. Not committed yet |
 | 4 — Invoices | ✅ Done | Money, InvoiceCalculator (integer maths), DTOs, Create/Update/Issue/Void/DeleteDraft actions, `Invoice::recalculatePaymentState()`, InvoicePolicy, InvoiceController + Vue pages (Index/Form/Show, StatusBadge). 129 tests / 743 assertions green (with phases 1-3). Not committed yet |
 | 5 — Payments | ✅ Done | `RecordPaymentAction` (transaction + `lockForUpdate` + fresh SUM) and `VoidPaymentAction`, Overpayment/InvoiceNotPayable exceptions (422 on `amount`), `StorePaymentRequest`, `PaymentPolicy` + `InvoicePolicy::recordPayment`, `PaymentController`, payment form/history on invoice page, `payments/Index.vue`. 159 tests / 1045 assertions green (all phases so far); Pint + build OK. Browser not verified. Not committed yet |
-| 6 — Overdue & scheduler | 🟡 Partial | Overdue logic done (scope, accessor, list filter, badge, `OverdueLogicTest`, `docs/ARCHITECTURE.md`). `invoices:mark-overdue` command and scheduler pending with Phase 7 |
-| 7 — Queued emails | ⬜ | |
+| 6 — Overdue & scheduler | ✅ Done | Overdue scope/accessor/filter/badge (`OverdueLogicTest`), `invoices:mark-overdue` (refuses to run without a tenant), scheduled via `tenants:run` daily 00:05 (`schedule:list` verified), `MarkOverdueInvoicesTest` (2 tenants, twice, no tenant, schedule). Not committed yet |
+| 7 — Queued emails | ✅ Done | `SendInvoiceEmail` job (idempotent via `invoice_email_logs`, `tries`/`backoff`, `ShouldBeUnique` kept with tenant-scoped id), issued + overdue mailables, dispatched `afterCommit` from `IssueInvoiceAction`, email history panel on invoice page, `SendInvoiceEmailTest` (real-queue tenant context). 185 tests green. Not committed yet |
 | 8 — Dashboard & cache | ⬜ | |
 | 9 — Reports | ⬜ | |
 | 10 — Seed & performance | ⬜ | |
@@ -688,7 +688,7 @@ $this->save();
 - running `invoices:mark-overdue` without a tenant → fails safely
 
 **Exit criteria**
-- [ ] Overdue tests green · `php artisan schedule:list` shows the job
+- [x] Overdue tests green · `php artisan schedule:list` shows the job
 
 ---
 
@@ -736,8 +736,8 @@ $this->save();
 - a customer without email → no email, no error
 
 **Exit criteria**
-- [ ] Issuing an invoice in the browser → email appears in Mailpit (via the `queue` container)
-- [ ] Tests green
+- [ ] Issuing an invoice in the browser → email appears in Mailpit (via the `queue` container) (not checked in the browser; the overdue email did arrive in Mailpit via the dev worker)
+- [x] Tests green
 
 ---
 

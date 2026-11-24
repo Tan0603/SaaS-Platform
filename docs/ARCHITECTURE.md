@@ -63,3 +63,54 @@ not the truth: an invoice is overdue because of its dates and payments, whether 
 - Paying in full, partially, or voiding a payment all move the invoice in and out of overdue without extra code.
 - Drafts and void invoices are never overdue, because the rule starts with `state = 'issued'`.
 - The index `(tenant_id, state, status, due_date)` on `invoices` serves the overdue query.
+
+## How queued jobs keep the tenant context
+
+A queue worker has no logged-in user and no request, so nothing tells it which company a job belongs to. We use
+stancl's `QueueTenancyBootstrapper` (enabled in `config/tenancy.php`):
+
+1. **Dispatch.** When a job is dispatched while a tenant is initialised, the bootstrapper adds `tenant_id` to the
+   job payload (the `jobs` row / Redis entry).
+2. **Work.** Before the worker runs `handle()`, the `JobProcessing` listener initialises that tenant; after the job
+   (success or failure) it ends tenancy again. Each job therefore starts in its own tenant and leaves none behind.
+3. **Inside the job.** `Invoice::find()` is filtered by `BelongsToTenant`, so a job holding an id from another
+   tenant finds nothing and exits. Jobs carry plain ids (`int $invoiceId`), never serialized models.
+
+`SendInvoiceEmail` is dispatched with `->afterCommit()`, and always from inside tenancy (a `PendingDispatch` pushes
+when it is destroyed, so it must be consumed in the tenant's scope). Tests cover this with a real database queue:
+dispatch in tenant A, end tenancy, run `queue:work --once`, and assert the mail was built for A.
+
+`ShouldBeUnique` is kept: its lock key is `"{tenant}:{invoice}:{event}"`, so tenants cannot block each other, and it
+is released by the worker (which has the tenant initialised, so the key matches). `uniqueFor` is one hour so a lock
+left by a dispatch whose transaction rolled back cannot block the invoice forever. It is only an optimisation; the
+database is what guarantees "once".
+
+## Email idempotency
+
+Exactly one email per `(tenant, invoice, event)` is enforced by the database, not by the queue:
+
+- `invoice_email_logs` has `UNIQUE (tenant_id, invoice_id, event)`.
+- The job claims the slot with `INSERT ... ON CONFLICT DO NOTHING`, then, in a transaction, locks that row
+  (`FOR UPDATE`). If `sent_at` is set it exits; otherwise it sends the mail and sets `sent_at`.
+- Duplicate dispatch or two workers at once: the second waits for the row lock, sees `sent_at`, and exits.
+- Crash or SMTP error before `sent_at` is written: the transaction rolls back (or leaves `sent_at` null), so the
+  retry (`$tries = 5`, backoff 10 s / 60 s / 300 s) sends it. The one unavoidable gap is a crash after SMTP accepted
+  the mail but before the commit, which gives at-least-once delivery in that rare case.
+- The job re-checks the invoice at run time: drafts and void invoices never email, and an overdue reminder is
+  skipped if the invoice was paid in the meantime.
+
+## The scheduler runs per tenant
+
+The daily command `invoices:mark-overdue` is scheduled as:
+
+```php
+Schedule::command('tenants:run invoices:mark-overdue')->dailyAt('00:05')->withoutOverlapping()->onOneServer();
+```
+
+`tenants:run` loops over every tenant, initialises it, runs our command, and ends tenancy before the next one, so
+`Invoice::overdue()` only ever sees one tenant's invoices. The command refuses to run (exit code 1) when tenancy is
+not initialised, so a direct `php artisan invoices:mark-overdue` cannot touch every tenant by accident.
+
+For each overdue invoice without `overdue_notified_at` it stamps that column and queues one overdue email job.
+It never changes `status`: overdue stays computed. The `overdue_notified_at` marker (plus the unique log row) makes
+the daily run safe to repeat.
