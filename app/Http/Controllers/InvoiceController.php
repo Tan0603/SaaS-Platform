@@ -7,6 +7,7 @@ use App\Actions\Invoices\DeleteDraftInvoiceAction;
 use App\Actions\Invoices\IssueInvoiceAction;
 use App\Actions\Invoices\UpdateInvoiceAction;
 use App\Actions\Invoices\VoidInvoiceAction;
+use App\Enums\PaymentMethod;
 use App\Http\Requests\Invoices\StoreInvoiceRequest;
 use App\Http\Requests\Invoices\UpdateInvoiceRequest;
 use App\Http\Requests\Invoices\VoidInvoiceRequest;
@@ -133,6 +134,8 @@ class InvoiceController extends Controller
                     'method' => $payment->method->value,
                     'reference' => $payment->reference,
                     'voided' => $payment->voided_at !== null,
+                    'void_reason' => $payment->void_reason,
+                    'can_void' => $user->can('void', $payment),
                 ])->values(),
             ],
             'can' => [
@@ -140,7 +143,10 @@ class InvoiceController extends Controller
                 'issue' => $user->can('issue', $invoice),
                 'void' => $user->can('void', $invoice),
                 'delete' => $user->can('delete', $invoice),
+                'record_payment' => $user->can('recordPayment', $invoice),
             ],
+            'methods' => PaymentMethod::options(),
+            'today' => today()->toDateString(),
         ]);
     }
 

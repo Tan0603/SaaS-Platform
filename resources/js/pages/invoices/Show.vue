@@ -26,6 +26,8 @@ interface PaymentRow {
     method: string;
     reference: string | null;
     voided: boolean;
+    void_reason: string | null;
+    can_void: boolean;
 }
 
 const props = defineProps<{
@@ -45,7 +47,9 @@ const props = defineProps<{
         items: Item[];
         payments: PaymentRow[];
     };
-    can: { update: boolean; issue: boolean; void: boolean; delete: boolean };
+    can: { update: boolean; issue: boolean; void: boolean; delete: boolean; record_payment: boolean };
+    methods: { value: string; label: string }[];
+    today: string;
 }>();
 
 const title = props.invoice.number ?? 'Draft invoice';
@@ -58,6 +62,39 @@ const breadcrumbs: BreadcrumbItem[] = [
 const busy = ref(false);
 const showVoid = ref(false);
 const voidForm = useForm({ reason: '' });
+
+const paymentForm = useForm({
+    amount: (props.invoice.balance_cents / 100).toFixed(2),
+    paid_at: props.today,
+    method: props.methods[0]?.value ?? 'cash',
+    reference: '',
+});
+
+function submitPayment() {
+    paymentForm.post(route('invoices.payments.store', { invoice: props.invoice.id }), {
+        preserveScroll: true,
+        onSuccess: () => paymentForm.reset('reference'),
+    });
+}
+
+// Voiding a payment asks for a reason first.
+const voidingPaymentId = ref<number | null>(null);
+const paymentVoidForm = useForm({ reason: '' });
+
+function startVoidPayment(id: number) {
+    voidingPaymentId.value = id;
+    paymentVoidForm.reset();
+    paymentVoidForm.clearErrors();
+}
+
+function submitVoidPayment(id: number) {
+    paymentVoidForm.post(route('payments.void', { payment: id }), {
+        preserveScroll: true,
+        onSuccess: () => (voidingPaymentId.value = null),
+    });
+}
+
+const selectClass = 'h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm';
 
 function post(url: string, confirmText: string) {
     if (!confirm(confirmText)) {
@@ -170,6 +207,37 @@ function submitVoid() {
             </dl>
 
             <h2 class="text-lg font-semibold">Payments</h2>
+
+            <form v-if="can.record_payment" class="grid max-w-3xl gap-3 rounded-lg border p-3 sm:grid-cols-2" @submit.prevent="submitPayment">
+                <label class="grid gap-1 text-sm">
+                    Amount (balance {{ formatMoney(invoice.balance_cents) }})
+                    <Input v-model="paymentForm.amount" inputmode="decimal" required />
+                    <InputError :message="paymentForm.errors.amount" />
+                </label>
+                <label class="grid gap-1 text-sm">
+                    Payment date
+                    <Input v-model="paymentForm.paid_at" type="date" required />
+                    <InputError :message="paymentForm.errors.paid_at" />
+                </label>
+                <label class="grid gap-1 text-sm">
+                    Method
+                    <select v-model="paymentForm.method" :class="selectClass">
+                        <option v-for="m in methods" :key="m.value" :value="m.value">{{ m.label }}</option>
+                    </select>
+                    <InputError :message="paymentForm.errors.method" />
+                </label>
+                <label class="grid gap-1 text-sm">
+                    Reference (optional)
+                    <Input v-model="paymentForm.reference" maxlength="100" />
+                    <InputError :message="paymentForm.errors.reference" />
+                </label>
+                <div class="sm:col-span-2">
+                    <Button type="submit" :disabled="paymentForm.processing">
+                        {{ paymentForm.processing ? 'Recording...' : 'Record payment' }}
+                    </Button>
+                </div>
+            </form>
+
             <div v-if="invoice.payments.length" class="overflow-x-auto rounded-lg border">
                 <table class="w-full text-left text-sm">
                     <thead class="border-b bg-muted/50">
@@ -178,18 +246,40 @@ function submitVoid() {
                             <th class="px-3 py-2">Method</th>
                             <th class="px-3 py-2">Reference</th>
                             <th class="px-3 py-2 text-right">Amount</th>
+                            <th class="px-3 py-2"></th>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="payment in invoice.payments" :key="payment.id" class="border-b last:border-0" :class="{ 'text-muted-foreground': payment.voided }">
-                            <td class="px-3 py-2">{{ payment.paid_at }}</td>
-                            <td class="px-3 py-2">{{ payment.method.replace('_', ' ') }}</td>
-                            <td class="px-3 py-2">{{ payment.reference ?? '-' }}</td>
-                            <td class="px-3 py-2 text-right">
-                                <span :class="{ 'line-through': payment.voided }">{{ formatMoney(payment.amount_cents) }}</span>
-                                <span v-if="payment.voided" class="ml-2 text-xs">Void</span>
-                            </td>
-                        </tr>
+                        <template v-for="payment in invoice.payments" :key="payment.id">
+                            <tr class="border-b last:border-0" :class="{ 'text-muted-foreground': payment.voided }">
+                                <td class="px-3 py-2">{{ payment.paid_at }}</td>
+                                <td class="px-3 py-2 capitalize">{{ payment.method.replace('_', ' ') }}</td>
+                                <td class="px-3 py-2">{{ payment.reference ?? '-' }}</td>
+                                <td class="px-3 py-2 text-right">
+                                    <span :class="{ 'line-through': payment.voided }">{{ formatMoney(payment.amount_cents) }}</span>
+                                    <StatusBadge v-if="payment.voided" status="void" class="ml-2" />
+                                </td>
+                                <td class="px-3 py-2 text-right">
+                                    <Button v-if="payment.can_void" variant="outline" size="sm" @click="startVoidPayment(payment.id)">Void</Button>
+                                    <span v-else-if="payment.void_reason" class="text-xs">{{ payment.void_reason }}</span>
+                                </td>
+                            </tr>
+                            <tr v-if="voidingPaymentId === payment.id" class="border-b bg-muted/30">
+                                <td colspan="5" class="px-3 py-2">
+                                    <form class="flex max-w-xl flex-col gap-2" @submit.prevent="submitVoidPayment(payment.id)">
+                                        <label class="text-sm font-medium" :for="`void-reason-${payment.id}`">Reason for voiding this payment</label>
+                                        <Input :id="`void-reason-${payment.id}`" v-model="paymentVoidForm.reason" required maxlength="255" />
+                                        <InputError :message="paymentVoidForm.errors.reason" />
+                                        <div class="flex gap-2">
+                                            <Button type="submit" variant="destructive" size="sm" :disabled="paymentVoidForm.processing">
+                                                {{ paymentVoidForm.processing ? 'Voiding...' : 'Void payment' }}
+                                            </Button>
+                                            <Button type="button" variant="outline" size="sm" @click="voidingPaymentId = null">Cancel</Button>
+                                        </div>
+                                    </form>
+                                </td>
+                            </tr>
+                        </template>
                     </tbody>
                 </table>
             </div>

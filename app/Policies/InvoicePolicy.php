@@ -44,6 +44,14 @@ class InvoicePolicy
         return $this->sameTenant($user, $invoice) && $invoice->canBeVoided();
     }
 
+    /** B6/B7: only an issued invoice with an outstanding balance can receive a payment. */
+    public function recordPayment(User $user, Invoice $invoice): bool
+    {
+        return $this->sameTenant($user, $invoice)
+            && $invoice->state === InvoiceState::Issued
+            && $invoice->balance_cents > 0;
+    }
+
     /** Only drafts are ever deleted. */
     public function delete(User $user, Invoice $invoice): bool
     {
