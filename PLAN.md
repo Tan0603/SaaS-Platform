@@ -148,7 +148,7 @@ The browser may show a live total preview, but the server **ignores any totals s
 | Area | Decision | Reason |
 |---|---|---|
 | Framework | Laravel 12 + official Vue starter kit (Vue 3, TypeScript, Inertia, Tailwind, shadcn-vue) | Required; gives login screens and a layout for free |
-| Database | PostgreSQL 16 | Reliable row locks and `CHECK` constraints |
+| Database | PostgreSQL 18 (Docker) | Reliable row locks and `CHECK` constraints |
 | Tenancy | `stancl/tenancy:^3.10`, single-database mode | Latest stable version; supports Laravel 12. Spec says "all models tenant-scoped" |
 | Identification | Subdomain (`acme.localhost`) | Standard stancl approach. Fallback: path `/t/acme/...` |
 | Cache / queue / session | Redis | Required |
@@ -211,41 +211,60 @@ Each phase has: **Goal · Why · How it works · Steps · Tests · Exit criteria
 
 ## Phase 0 — Project setup & environment
 
-**Goal:** an empty Laravel 12 + Vue app running in Docker with PostgreSQL, Redis and Mailpit.
+**Goal:** an empty Laravel 12 + Vue app running on your machine, using PostgreSQL, Redis and Mailpit from Docker.
 
 **Why:** everything else depends on a working, repeatable environment. The reviewer must be able to run the project with a few commands.
 
-**How it works:** Docker Compose starts several containers that talk to each other by name:
+**How it works:** Docker runs only the **services** (the same style as your other projects). Laravel, the queue worker, the scheduler and Vite run on your machine with `php` / `npm`.
 
-| Container | Purpose |
+| Runs in Docker (`docker-compose.yml`) | Purpose | Address from Laravel |
+|---|---|---|
+| `postgres` (18.1) | Main DB `saas_platform` + test DB `saas_platform_testing` (created by `docker/postgres/init/01-create-testing-db.sql`) | `127.0.0.1:5432`, user `postgres`, no password (trust, local only) |
+| `redis` (8.4) | Cache, queue and sessions | `127.0.0.1:6379` |
+| `mailpit` | Fake mail server; inbox at `http://localhost:8025` | SMTP `127.0.0.1:1025` |
+
+| Runs on your machine | Command |
 |---|---|
-| `app` | PHP 8.3-FPM running Laravel (extensions: `pdo_pgsql`, `redis`, `bcmath`) |
-| `nginx` | Web server; forwards requests to `app`; accepts `localhost` and `*.localhost` |
-| `pgsql` | PostgreSQL 16 (main DB + a `testing` DB) |
-| `redis` | Cache, queue and sessions |
-| `queue` | Same image as `app`, runs `php artisan queue:work redis` (sends emails) |
-| `scheduler` | Same image, runs `php artisan schedule:work` (daily overdue job) |
-| `mailpit` | Fake mail server with a web inbox at `http://localhost:8025` |
+| Web server + queue worker + logs + Vite | `composer run dev` (starter-kit script: `php artisan serve`, `queue:listen`, `pail`, `npm run dev`) |
+| Scheduler (daily overdue job) | `php artisan schedule:work` (second terminal) |
 
-Browsers resolve `*.localhost` to 127.0.0.1 automatically, so `acme.localhost` works without editing `/etc/hosts` (Chrome, Firefox, Edge). Note this in the README.
+`docker-compose.yml` sets `name: saas-platform`, so its containers and volumes never mix with your other projects. Ports can be moved with `FORWARD_DB_PORT`, `FORWARD_REDIS_PORT`, `FORWARD_MAILPIT_PORT` and `FORWARD_MAILPIT_DASHBOARD_PORT` in `.env` if another project already uses them. Stop the other project's containers or change these ports before `docker compose up`.
+
+Browsers resolve `*.localhost` to 127.0.0.1 automatically, so `http://acme.localhost:8000` reaches `php artisan serve` without editing the hosts file (Chrome, Firefox, Edge). Note this in the README.
 
 **Steps**
-1. `composer create-project` / `laravel new` with the **Vue** starter kit into the repository root.
-2. Add `docker/php.Dockerfile`, `docker/nginx.conf` (`server_name localhost *.localhost;`), `docker-compose.yml`.
-3. `.env.example`:
+1. `docker compose up -d` → all three services `healthy`. (Done.)
+2. `composer create-project laravel/vue-starter-kit` (or `laravel new` → Vue) into the repository root.
+3. `composer require predis/predis` so Redis works without installing the `phpredis` extension (easier on Windows).
+4. `.env` / `.env.example`:
    ```
-   DB_CONNECTION=pgsql   DB_HOST=pgsql   DB_DATABASE=accounting
-   CACHE_STORE=redis     QUEUE_CONNECTION=redis   SESSION_DRIVER=redis
-   REDIS_HOST=redis      MAIL_MAILER=smtp   MAIL_HOST=mailpit   MAIL_PORT=1025
+   APP_URL=http://localhost:8000
+   DB_CONNECTION=pgsql
+   DB_HOST=127.0.0.1
+   DB_PORT=5432
+   DB_DATABASE=saas_platform
+   DB_USERNAME=postgres
+   DB_PASSWORD=
+   REDIS_CLIENT=predis
+   REDIS_HOST=127.0.0.1
+   REDIS_PORT=6379
+   CACHE_STORE=redis
+   QUEUE_CONNECTION=redis
+   SESSION_DRIVER=redis
+   MAIL_MAILER=smtp
+   MAIL_HOST=127.0.0.1
+   MAIL_PORT=1025
    ```
-4. `phpunit.xml`: use the Postgres `testing` database (not SQLite — SQLite ignores row locks, so tests would not prove the real behaviour).
-5. In `AppServiceProvider::boot()`:
+5. `phpunit.xml`: `DB_CONNECTION=pgsql`, `DB_DATABASE=saas_platform_testing` (not SQLite: SQLite ignores row locks, so tests would not prove the real behaviour).
+6. In `AppServiceProvider::boot()`:
    ```php
    Model::shouldBeStrict(! app()->isProduction()); // throws on N+1 lazy loading & silent mistakes
    ```
+7. Your PHP needs the `pdo_pgsql` extension enabled (`php -m | grep pdo_pgsql`).
 
 **Exit criteria**
-- [ ] `docker compose up -d` → the welcome page loads at `http://localhost`
+- [x] `docker compose up -d` → postgres, redis, mailpit healthy; both databases exist
+- [ ] `php artisan migrate` works · welcome page loads at `http://localhost:8000`
 - [ ] `php artisan test` passes (starter kit tests) · `npm run build` succeeds
 - [ ] Mailpit inbox opens at `http://localhost:8025`
 
@@ -783,7 +802,7 @@ Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not
 1. **Isolation sweep:** `tests/Feature/Tenancy/CrossTenantRoutesTest.php` — log in as tenant A and request every route that takes an ID (customers, invoices, payments, reports filtered by customer) using tenant B's IDs → all 404. Also confirm dashboard and report numbers ignore B.
 2. Walk through section 1.6 line by line.
 3. Final review of the whole repository (structure, naming, dead code, N+1).
-4. `README.md`: requirements, `docker compose up`, `migrate --seed`, demo URLs + logins, how to run the queue, scheduler and tests, the key design decisions (overdue, cents, locking, idempotency, caching).
+4. `README.md`: requirements (PHP 8.3 + pdo_pgsql, Composer, Node, Docker), `docker compose up -d`, `migrate --seed`, `composer run dev`, demo URLs + logins, how to run the scheduler and tests, the key design decisions (overdue, cents, locking, idempotency, caching).
 5. `docs/ERD.md` (final) and `docs/ARCHITECTURE.md` (tenancy, payment locking, overdue, email idempotency, caching, performance results).
 6. Fresh clone → follow the README → everything works.
 
@@ -848,7 +867,7 @@ SaaS-Platform/
 │   ├── TestCase.php
 │   ├── Feature/{Auth,Tenancy,Customers,Invoices,Payments,Jobs,Dashboard,Reports}/…
 │   └── Unit/InvoiceCalculatorTest.php
-├── docker/{php.Dockerfile,nginx.conf}
+├── docker/postgres/init/01-create-testing-db.sql
 ├── docker-compose.yml
 ├── docs/{ERD,ARCHITECTURE}.md
 ├── PLAN.md
