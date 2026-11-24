@@ -168,14 +168,14 @@ Docker runs only the services; Laravel, the queue worker, the scheduler and Vite
 
 ```bash
 docker compose up -d            # start postgres, redis, mailpit (group: saas-accounting)
-composer run dev                # app server + queue listener + logs + Vite
+npm run dev                     # Docker services + app server + queue listener + scheduler + Vite
 php artisan schedule:work       # scheduler (second terminal)
 php artisan test                # feature tests against saas_platform_testing (PostgreSQL, not SQLite)
 vendor/bin/pint                 # code style
 npm run build                   # frontend build check
 ```
 
-Tenants are reached by subdomain, e.g. `http://acme.localhost:8000` (`*.localhost` resolves to 127.0.0.1 in modern browsers).
+One site at `http://localhost:8000`. The tenant comes from the logged-in user (`users.tenant_id`) via the `InitializeTenancyByUser` middleware; there is no company field at login and `users.email` is globally unique. Demo logins: `admin@acme.test` / `admin@globex.test`, password `password`.
 
 ---
 
