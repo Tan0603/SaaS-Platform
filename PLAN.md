@@ -7,6 +7,23 @@ How to use this file:
 2. Then build **one phase at a time** (Part 2). Each phase explains *why*, *how it works* and *what to do*, and ends with **Exit criteria**.
 3. A phase is done only when every exit criterion is checked. Then commit, push, review against **section 1.6**, and only then start the next phase.
 
+## Progress (updated 2026-11-24)
+
+| Phase | Status | Notes |
+|---|---|---|
+| 0 — Setup & environment | ✅ Done | Docker services healthy, migrations run, build OK, Mailpit at :8025 |
+| 1 — Multi-tenancy & login | ✅ Done | One site `localhost:8000`; tenant from logged-in user; 26 tests / 117 assertions green; Pint OK. Not committed yet |
+| 2 — Schema, models, factories | ⬜ Next | |
+| 3 — Customers | ⬜ | |
+| 4 — Invoices | ⬜ | |
+| 5 — Payments | ⬜ | |
+| 6 — Overdue & scheduler | ⬜ | |
+| 7 — Queued emails | ⬜ | |
+| 8 — Dashboard & cache | ⬜ | |
+| 9 — Reports | ⬜ | |
+| 10 — Seed & performance | ⬜ | |
+| 11 — Hardening & docs | ⬜ | |
+
 ---
 
 # Part 1 — Understand the system before building
@@ -32,9 +49,9 @@ The graders care most about three things:
 
 | Term | What it means here |
 |---|---|
-| **Tenant** | One company. Stored in the `tenants` table (id like `acme`). Each tenant has a domain row (`acme`) used for the subdomain `acme.localhost`. |
+| **Tenant** | One company. Stored in the `tenants` table (id like `acme`). Each user belongs to exactly one tenant (`users.tenant_id`). |
 | **Single-database tenancy** | All companies share one database. Every business table has a `tenant_id` column. Isolation comes from always filtering by `tenant_id`. |
-| **Tenancy initialization** | At the start of each request, stancl/tenancy reads the subdomain, finds the tenant and "switches on" that tenant. From then on `tenant()` returns the current company. |
+| **Tenancy initialization** | On every authenticated request, the `InitializeTenancyByUser` middleware takes the logged-in user's tenant and "switches it on". From then on `tenant()` returns the current company. |
 | **`BelongsToTenant` trait** | Added to a model. It does two things automatically: (1) adds `WHERE tenant_id = <current tenant>` to **every** query (a *global scope*), and (2) fills `tenant_id` when a row is created. So `Invoice::find(5)` returns `null` if invoice 5 belongs to another company → we show 404. |
 | **Bootstrappers** | stancl plugins that make other Laravel parts tenant-aware when a tenant is initialized: **Cache** (each tenant gets its own cache tag/prefix) and **Queue** (the tenant id is written into every queued job and restored when the job runs). |
 | **Inertia.js** | The "glue" between Laravel and Vue. A controller returns `Inertia::render('invoices/Index', $props)` instead of HTML or JSON; Inertia loads the Vue page `resources/js/pages/invoices/Index.vue` and passes `$props` to it. No separate API. |
@@ -50,16 +67,16 @@ The graders care most about three things:
 ## 1.3 Life of a request (big picture)
 
 ```
-User opens http://acme.localhost/invoices/12
+Logged-in Acme user opens http://localhost:8000/invoices/12
         │
         ▼
- ① Tenancy middleware ── reads subdomain "acme" → finds tenant → tenancy()->initialize(acme)
+ ① auth middleware ───── is someone logged in? If not → redirect to /login
+        ▼
+ ② InitializeTenancyByUser ── reads the logged-in user's tenant → tenancy()->initialize(acme)
         │                 • every Eloquent query now gets  WHERE tenant_id = 'acme'
         │                 • cache keys are separated per tenant
         │                 • queued jobs will carry tenant_id = 'acme'
-        ▼
- ② auth middleware ───── is someone logged in? (the users table is tenant-scoped too,
-        │                 so only Acme's users can ever be logged in here)
+        │                 • user has no tenant → 403
         ▼
  ③ Controller ────────── Invoice::with('items','payments')->findOrFail(12)
         │                 → invoice 12 belongs to Globex? the scope hides it → 404
@@ -73,8 +90,7 @@ User opens http://acme.localhost/invoices/12
 ## 1.4 The data model
 
 ```
-tenants ─┬─< domains
-         ├─< users
+tenants ─┬─< users
          └─< customers ─< invoices ─┬─< invoice_items
                                     ├─< payments
                                     └─< invoice_email_logs
@@ -150,7 +166,7 @@ The browser may show a live total preview, but the server **ignores any totals s
 | Framework | Laravel 12 + official Vue starter kit (Vue 3, TypeScript, Inertia, Tailwind, shadcn-vue) | Required; gives login screens and a layout for free |
 | Database | PostgreSQL 18 (Docker) | Reliable row locks and `CHECK` constraints |
 | Tenancy | `stancl/tenancy:^3.10`, single-database mode | Latest stable version; supports Laravel 12. Spec says "all models tenant-scoped" |
-| Identification | Subdomain (`acme.localhost`) | Standard stancl approach. Fallback: path `/t/acme/...` |
+| Identification | From the logged-in user (`users.tenant_id`) via `InitializeTenancyByUser` middleware; one site, email unique globally | One login page, no company field; guest routes run without tenancy so the login lookup sees all users |
 | Cache / queue / session | Redis | Required |
 | Money | integer cents | No rounding errors |
 | Code layout | Controllers → FormRequests → Actions / Services → Models | Clean, testable, reusable |
@@ -190,7 +206,7 @@ The assessment asks us to design the business logic ourselves, using Bukku (a Ma
 | B9 | **Customers** | Contact has default terms, currency, TIN (needed for e-invoice) | Fields: name, email, phone, billing address, `registration_no` (SSM/TIN, optional), `payment_terms_days`. A customer with invoices cannot be deleted, only **archived** (soft delete): hidden from the invoice customer picker, history kept, can be restored. |
 | B10 | **Currency & tax** | Multi-currency and SST tax codes | Single currency per tenant (`tenants.currency`, default `MYR`). No tax (SST) in scope; `InvoiceCalculator` is the single place to add it later. |
 | B11 | **Emails** | Invoice sent on "save and send"; automatic reminders before due and when overdue; email tracker on the invoice | Emails: **invoice issued** (on issue) and **overdue reminder** (daily job). Optional stretch: **payment receipt**. The invoice page shows an email history from `invoice_email_logs`. |
-| B12 | **Multi-company** | One login can own several companies, switched from a dropdown | Spec model: each user belongs to **one** tenant and reaches it via its subdomain. Switching companies is out of scope. |
+| B12 | **Multi-company** | One login can own several companies, switched from a dropdown | Spec model: each user belongs to **one** tenant and reaches it through `users.tenant_id`. Switching companies is out of scope. |
 | B13 | **Reports** | Standard accounting reports | Sales report, **Receivables aging** (outstanding invoices bucketed Current / 1–30 / 31–60 / 61–90 / 90+ days overdue), Customer summary. Only `issued` invoices and non-voided payments count. |
 
 ### What this changes in the rules
@@ -199,6 +215,24 @@ The assessment asks us to design the business logic ourselves, using Bukku (a Ma
 - **Everything that sums money** (dashboard, reports) uses `state = issued` invoices and `voided_at IS NULL` payments only.
 - **Payment allowed only when** `state = issued` and `status != paid`.
 - **`recalculatePaymentState()`** sums only non-voided payments.
+
+## 1.9 Performance & scalability rules (apply in every phase)
+
+The performance seed (Phase 10) gives each tenant about 5,000 invoices and 15,000 items. Every page must stay fast at that size. Each rule below is checked in code review and, where marked, by a test.
+
+| # | Rule | How |
+|---|---|---|
+| P1 | **No N+1 queries** | Eager-load (`with('customer:id,name')`). `Model::shouldBeStrict()` throws on lazy loading in dev and tests. **Test:** a list page runs the same number of queries for 3 rows as for 30 (`DB::enableQueryLog()`). |
+| P2 | **Every list is paginated** | `paginate(15)->withQueryString()`. Never `->get()` or `->all()` on a table that grows. Dropdowns such as the customer picker return only `id, name`. |
+| P3 | **Select only needed columns** | `select()` or `with('rel:id,col')`. Inertia props send only what the page shows, not whole models. |
+| P4 | **Totals are calculated in SQL** | `SUM`, `COUNT`, `FILTER (WHERE …)` and `GROUP BY` in the database. Never load rows to add them up in PHP. `amount_paid_cents` is stored on the invoice, so lists need no payment sums. |
+| P5 | **Every filter and sort has an index** | Composite indexes start with `tenant_id` (the tenant scope adds `WHERE tenant_id = ?` to every query). PostgreSQL does not index foreign keys automatically, so add them. Phase 10 confirms with `EXPLAIN ANALYZE`. |
+| P6 | **Short transactions, narrow locks** | Lock only the one invoice row (`lockForUpdate`), and do no email or HTTP inside the transaction. Dispatch jobs `afterCommit`. |
+| P7 | **Slow work goes to the queue** | Emails and reminders run as Redis queue jobs, so a web request never waits for SMTP. |
+| P8 | **Cache the dashboard per tenant** | `Cache::remember` in Redis. Observers clear it on invoice or payment change, so the cache is never stale. |
+| P9 | **Large batches are chunked** | The scheduler and seeders use `chunkById(500)` and bulk `insert()` of 1,000 rows, never one row at a time. |
+| P10 | **Stateless web layer** | Sessions, cache and queue all live in Redis, and nothing is stored on local disk. More app servers or queue workers can be added behind a load balancer with no code change. |
+| P11 | **Production settings** | `config:cache`, `route:cache`, `view:cache` and OPcache on. `APP_DEBUG=false`. Use the `phpredis` extension instead of `predis` where available. Document this in README. |
 
 
 ---
@@ -225,15 +259,15 @@ Each phase has: **Goal · Why · How it works · Steps · Tests · Exit criteria
 
 | Runs on your machine | Command |
 |---|---|
-| Web server + queue worker + logs + Vite | `composer run dev` (starter-kit script: `php artisan serve`, `queue:listen`, `pail`, `npm run dev`) |
+| Web server + queue worker + logs + Vite | `npm run dev` (starts Docker services, `php artisan serve`, `queue:listen`, `schedule:work` and Vite) |
 | Scheduler (daily overdue job) | `php artisan schedule:work` (second terminal) |
 
 `docker-compose.yml` sets `name: saas-accounting`, so Docker Desktop groups its containers and volumes under **saas-accounting** and they never mix with your other projects. Ports can be moved with `FORWARD_DB_PORT`, `FORWARD_REDIS_PORT`, `FORWARD_MAILPIT_PORT` and `FORWARD_MAILPIT_DASHBOARD_PORT` in `.env` if another project already uses them. Stop the other project's containers or change these ports before `docker compose up`.
 
-Browsers resolve `*.localhost` to 127.0.0.1 automatically, so `http://acme.localhost:8000` reaches `php artisan serve` without editing the hosts file (Chrome, Firefox, Edge). Note this in the README.
+Everything is served from one host, `http://localhost:8000` (`php artisan serve`); no hosts-file or subdomain setup is needed.
 
 **Steps**
-1. `docker compose up -d` → all three services `healthy`. (Done.)
+1. `docker compose up -d` → all three services `healthy`.
 2. `composer create-project laravel/vue-starter-kit` (or `laravel new` → Vue) into the repository root.
 3. `composer require predis/predis` so Redis works without installing the `phpredis` extension (easier on Windows).
 4. `.env` / `.env.example`:
@@ -264,71 +298,79 @@ Browsers resolve `*.localhost` to 127.0.0.1 automatically, so `http://acme.local
 
 **Exit criteria**
 - [x] `docker compose up -d` → postgres, redis, mailpit healthy; both databases exist
-- [ ] `php artisan migrate` works · welcome page loads at `http://localhost:8000`
-- [ ] `php artisan test` passes (starter kit tests) · `npm run build` succeeds
-- [ ] Mailpit inbox opens at `http://localhost:8025`
+- [x] `php artisan migrate` works · `http://localhost:8000` redirects to the login page
+- [x] `php artisan test` passes (starter kit tests) · `npm run build` succeeds
+- [x] Mailpit inbox opens at `http://localhost:8025`
 
 ---
 
 ## Phase 1 — Multi-tenancy foundation & login
 
-**Goal:** every request runs inside exactly one tenant; a user can log in only on their own company's subdomain.
+**Goal:** every request runs inside exactly one tenant; one login page; after login the tenant is taken from the user.
 
 **Why:** this is worth 25 points and is the #1 automatic-fail risk. Building it first means every later feature is isolated by default.
 
 **How it works**
-- `localhost` is the **central domain** (landing page only, no company data).
-- `acme.localhost` is a **tenant domain**. The middleware `InitializeTenancyBySubdomain` takes `acme`, looks it up in `domains`, and initializes that tenant.
-- `PreventAccessFromCentralDomains` stops tenant pages from being opened on `localhost`.
-- The `users` table gets `tenant_id` + `BelongsToTenant`. When the login form checks the email, the query already has `WHERE tenant_id = 'acme'`, so a Globex user's email simply does not exist on Acme's login page.
-- Sessions: the cookie belongs to `acme.localhost` only, so being logged in at Acme does not log you in at Globex.
+- One site, `http://localhost:8000`. `/login` asks for email + password only.
+- Guest routes (login) run **without** tenancy on purpose: stancl's `TenantScope` does nothing while tenancy is not initialized, so the login lookup searches all users. `users.email` is therefore **globally unique**.
+- Every authenticated route sits behind `auth` + `App\Http\Middleware\InitializeTenancyByUser`, which calls `tenancy()->initialize($request->user()->tenant)` (403 if the user has no tenant).
+- The `users` table gets `tenant_id` (NOT NULL, FK, cascade) + `BelongsToTenant`; from the middleware onward every query has `WHERE tenant_id = <user's tenant>`.
+- `HandleInertiaRequests` shares `tenant` lazily (a closure), because `share()` runs before the route middleware.
 
 **Steps**
 1. Install:
    ```bash
    composer require stancl/tenancy:^3.10
-   php artisan tenancy:install      # creates config/tenancy.php, routes/tenant.php, TenancyServiceProvider, migrations
+   php artisan tenancy:install      # creates config/tenancy.php, TenancyServiceProvider, migrations (delete the generated routes/tenant.php and domains migration; unused)
    ```
 2. `config/tenancy.php`:
    - `tenant_model` → `App\Models\Tenant`
-   - `central_domains` → `['localhost', '127.0.0.1']`
+   - `central_domains` → unused (identification is by user, not domain); `domain_model` removed
    - `bootstrappers` → **remove** `DatabaseTenancyBootstrapper` (single DB), keep `CacheTenancyBootstrapper` and `QueueTenancyBootstrapper`, remove `FilesystemTenancyBootstrapper` (not needed)
 3. `app/Models/Tenant.php`:
    ```php
    class Tenant extends \Stancl\Tenancy\Database\Models\Tenant
    {
-       use \Stancl\Tenancy\Database\Concerns\HasDomains;
        public static function getCustomColumns(): array { return ['id', 'name']; }
    }
    ```
-4. Migration: add `name` to `tenants`; add `tenant_id` (FK, cascade) to `users`; replace `users.email` unique with `UNIQUE(tenant_id, email)`.
+4. Migration: add `name` to `tenants`; add `tenant_id` (FK, cascade) to `users`; keep `users.email` globally `UNIQUE`.
 5. `User` model: `use BelongsToTenant;`.
 6. Routes:
-   - `routes/web.php` → central only: a landing page listing demo company links.
-   - `routes/tenant.php` → **all** app routes inside
-     `Route::middleware(['web', InitializeTenancyBySubdomain::class, PreventAccessFromCentralDomains::class])`.
-   - Move the starter kit's auth routes in too. (If the kit uses **Fortify**, add the two tenancy middlewares to `config/fortify.php` → `'middleware'`; if it uses `routes/auth.php`, `require` that file inside the tenant group.)
+   - `routes/web.php` → all app routes: `/` redirects to `/dashboard`; guest auth routes (`routes/auth.php`) run without tenancy; everything else is inside
+     `Route::middleware(['auth', InitializeTenancyByUser::class])`.
+   - No `routes/tenant.php`, no `Route::domain` wrappers, no `domains` table.
 7. Turn off self-registration (accounts come from the seeder).
 8. `HandleInertiaRequests::share()` → add `tenant: { id, name }` and `flash: { success, error }` so every Vue page can show the company name and messages.
 9. `tests/TestCase.php` helpers:
    ```php
-   protected function createTenant(string $id = 'acme'): Tenant   // creates tenant + domain
-   protected function tenantUrl(string $tenant, string $path): string // "http://acme.localhost{$path}"
+   protected function createTenant(string $id = 'acme'): Tenant   // creates tenant
    protected function actingAsTenantUser(Tenant $tenant): User    // initializes tenancy + creates & logs in a user
    ```
 
 **Tests** — `tests/Feature/Auth/AuthenticationTest.php`
-- login page loads at `acme.localhost/login`
+- login page loads at `/login`
 - correct password → redirected to dashboard
 - wrong password → error, still a guest
 - logout works
-- **an Acme user's credentials fail at `globex.localhost/login`**
-- a guest visiting `acme.localhost/dashboard` is redirected to login
-- `localhost/dashboard` (central) → 404
+- after login an Acme user runs in tenant `acme` (and shares `Acme Sdn Bhd`); a Globex user gets Globex, never Acme
+- the same email cannot exist in two tenants (unique violation)
+- a guest visiting `/dashboard` is redirected to login; `/` redirects to `/dashboard`
+- `Feature/Tenancy/TenancyMiddlewareTest.php`: inside the middleware `User::count()` only sees the current tenant's users
 
 **Exit criteria**
-- [ ] Login works at `acme.localhost`; the same credentials fail at `globex.localhost`
-- [ ] All auth tests green
+- [x] Login at `localhost:8000` with `admin@acme.test` shows Acme data only; `admin@globex.test` shows Globex data only
+- [x] All auth tests green
+
+**Demo logins (from DatabaseSeeder)**
+
+| | |
+|---|---|
+| Login page | http://localhost:8000/login |
+| Acme Sdn Bhd | `admin@acme.test` / `password` |
+| Globex Sdn Bhd | `admin@globex.test` / `password` |
+
+These are local seed accounts only; never use them outside development.
 
 ---
 
@@ -401,7 +443,7 @@ All `tenant_id` columns: `foreignId`-style string FK → `tenants.id`, cascade o
 
 **How it works (request flow for "create customer")**
 ```
-Create.vue   useForm({name,email,phone,address}) → form.post('/customers')
+Form.vue     useForm({name,email,phone,address}) → form.post('/customers')
    ▼
 StoreCustomerRequest  validates; on error Inertia puts messages in form.errors (no page reload)
    ▼
@@ -416,6 +458,8 @@ UX states the spec asks for:
 - **Error** — field errors under each input; a toast for general errors; a friendly 404/403 page.
 - **Empty** — `EmptyState.vue` ("No customers yet" + "Add customer" button) when the list is empty.
 
+> **UI scope:** basic UI is enough (the spec says "basic components are fine"). Use the starter kit's existing `ui/` components (Input, Button, Label, Card, Badge) and plain Tailwind tables. No custom design work. Loading / error / empty states are still required, but done the simple way above.
+
 **Steps**
 1. `CustomerController` (resource). `index`: search by name/email, `paginate(15)->withQueryString()`.
 2. `StoreCustomerRequest` / `UpdateCustomerRequest`:
@@ -425,8 +469,8 @@ UX states the spec asks for:
 3. `CustomerPolicy` — extra safety: `$user->tenant_id === $customer->tenant_id`.
 4. `destroy` = **archive** (soft delete): allowed even with invoices; the history stays. Archived customers are hidden from the list (filter "Show archived") and from the invoice customer picker. `restore` route brings one back.
 5. Form fields include `registration_no` and `payment_terms_days` (select: Due on receipt / 7 / 14 / 30 / 60 days).
-6. Shared Vue: `DataTable.vue`, `Pagination.vue`, `EmptyState.vue`, `FlashToast.vue`, error page for 403/404/500 (registered in `bootstrap/app.php` → `withExceptions`).
-7. Pages: `customers/Index.vue`, `Create.vue`, `Edit.vue`, `Show.vue` (Show lists that customer's invoices).
+6. Shared Vue (keep it to these): `EmptyState.vue`, `Pagination.vue`, `FlashMessage.vue` (shows the shared `flash` prop as a simple alert). Tables are plain `<table>` markup; Laravel's default 404/403 pages are fine.
+7. Pages: `customers/Index.vue`, `Form.vue` (one page for create and edit), `Show.vue` (lists that customer's invoices).
 
 **Tests** — `tests/Feature/Customers/CustomerManagementTest.php`
 - create / update / delete happy paths
@@ -495,7 +539,7 @@ StoreInvoiceRequest (validate) → InvoiceData DTO → CreateInvoiceAction:
 6. `InvoiceController`:
    - `index`: filter by `draft`/`unpaid`/`partial`/`paid`/`overdue`/`void`, customer, date; `with('customer:id,name')`; paginate
    - `show`: `load(['items', 'payments' => fn ($q) => $q->latest('paid_at')])`
-7. Vue: `InvoiceItemsEditor.vue` (add/remove rows, live total preview), `StatusBadge.vue` (draft outline, unpaid grey, partial amber, paid green, overdue red, void struck-through), `composables/useMoney.ts` (format cents for display), pages `invoices/Index.vue`, `Create.vue`, `Edit.vue`, `Show.vue`.
+7. Vue: `StatusBadge.vue` (one coloured badge per status), `composables/useMoney.ts` (format cents for display), pages `invoices/Index.vue`, `Form.vue` (create and edit; item rows with add/remove buttons and a simple running total), `Show.vue`.
 
 **Tests**
 - `tests/Unit/InvoiceCalculatorTest.php`: one item; several items; decimal quantity (1.5 × 3.33); rounding half up; zero price
@@ -604,7 +648,7 @@ $this->save();
 **Why:** "scheduler ignores tenant isolation" is an automatic fail.
 
 **How it works**
-- A scheduled task runs from the command line, where there is **no subdomain** and therefore no tenant. If our command ran directly, the `BelongsToTenant` scope would have no tenant to filter by.
+- A scheduled task runs from the command line, where there is **no logged-in user** and therefore no tenant. If our command ran directly, the `BelongsToTenant` scope would have no tenant to filter by.
 - stancl's `tenants:run` command solves this: it loops over every tenant, **initializes that tenant**, runs our command, then ends tenancy before moving to the next one. Inside our command, `Invoice::overdue()` therefore only sees the current tenant's invoices.
   ```php
   // routes/console.php
@@ -782,15 +826,17 @@ Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not
 - Then we run `EXPLAIN ANALYZE` on the dashboard and report queries and confirm they use our indexes.
 
 **Steps**
-1. `DatabaseSeeder`: tenants `acme` (Acme Sdn Bhd) and `globex` (Globex Trading) + domains + one login each (`admin@acme.test` / `password`, `admin@globex.test` / `password`).
+1. `DatabaseSeeder`: tenants `acme` (Acme Sdn Bhd) and `globex` (Globex Sdn Bhd) + one login each (`admin@acme.test` / `password`, `admin@globex.test` / `password`).
 2. `DemoTenantSeeder`: ~20 customers, ~50 invoices with a mix of draft/unpaid/partial/paid/overdue/void and a few voided payments.
 3. `PerformanceSeeder` (per tenant): 500 customers, 5,000 invoices, ~15,000 items, ~5,000 payments.
 4. Consistency check + `EXPLAIN ANALYZE`; record before/after timings (with and without cache) in `docs/ARCHITECTURE.md`.
 5. Browse every page with strict mode on (Phase 0) → fix any N+1 problem by eager loading.
+6. Time every list, dashboard and report page with the seed loaded: target **< 300 ms** server time (Laravel debug log or `curl -w '%{time_total}'`), dashboard **< 50 ms** when cached.
 
 **Exit criteria**
 - [ ] `php artisan db:seed --class=PerformanceSeeder` finishes in under ~1 minute
-- [ ] Consistency check returns 0 bad rows · pages stay fast · no lazy-loading errors
+- [ ] Consistency check returns 0 bad rows · no lazy-loading errors
+- [ ] Every page < 300 ms with seed data · `EXPLAIN ANALYZE` shows index scans (no `Seq Scan` on invoices/payments) · §1.9 rules P1–P11 hold
 
 ---
 
@@ -802,7 +848,7 @@ Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not
 1. **Isolation sweep:** `tests/Feature/Tenancy/CrossTenantRoutesTest.php` — log in as tenant A and request every route that takes an ID (customers, invoices, payments, reports filtered by customer) using tenant B's IDs → all 404. Also confirm dashboard and report numbers ignore B.
 2. Walk through section 1.6 line by line.
 3. Final review of the whole repository (structure, naming, dead code, N+1).
-4. `README.md`: requirements (PHP 8.3 + pdo_pgsql, Composer, Node, Docker), `docker compose up -d`, `migrate --seed`, `composer run dev`, demo URLs + logins, how to run the scheduler and tests, the key design decisions (overdue, cents, locking, idempotency, caching).
+4. `README.md`: requirements (PHP 8.3 + pdo_pgsql, Composer, Node, Docker), `docker compose up -d`, `migrate --seed`, `npm run dev`, demo URL + logins + logins, how to run the scheduler and tests, the key design decisions (overdue, cents, locking, idempotency, caching).
 5. `docs/ERD.md` (final) and `docs/ARCHITECTURE.md` (tenancy, payment locking, overdue, email idempotency, caching, performance results).
 6. Fresh clone → follow the README → everything works.
 
@@ -816,65 +862,277 @@ Every number comes from `SUM` / `COUNT` in the database (spec: "reports must not
 
 ## 3.1 Folder structure (target)
 
+Legend: ✅ already exists · 🔧 exists, will be changed · ⬜ to build (the number is the phase that creates it).
+Starter-kit files we do not touch (`components/ui/*`, settings pages, layouts) are left out to keep the tree readable.
+
+### 3.1.1 The layers, and the rule for where code goes
+
+```
+HTTP request
+  → routes/web.php                    `auth` + `InitializeTenancyByUser` middleware (tenant from the user)
+  → Http/Controllers/*Controller      thin: authorize, call one Action or Service, return an Inertia page or redirect
+  → Http/Requests/<Area>/*Request     validation only; every `exists` / `unique` rule is tenant-scoped
+  → Data/*Data                        typed, validated input (money already converted to cents)
+  → Actions/<Area>/*Action            ONE business write, inside DB::transaction (+ lockForUpdate when money moves)
+  → Services/*                        pure calculations and read-only SQL queries (dashboard, reports)
+  → Models/*                          BelongsToTenant, relationships, scopes, accessors, recalculatePaymentState()
+  → database                          FKs, UNIQUE and CHECK constraints = last line of defence
+After commit: Observers (cache flush) · Jobs (emails, run inside the tenant via QueueTenancyBootstrapper)
+```
+
+| If the code… | it goes in |
+|---|---|
+| validates a form | `app/Http/Requests/<Area>/` |
+| changes data (create, issue, pay, void) | `app/Actions/<Area>/` |
+| calculates or reads aggregates | `app/Services/` |
+| decides whether a user may do something | `app/Policies/` |
+| is a fixed list of values (state, status, method) | `app/Enums/` |
+| runs in the background | `app/Jobs/` (+ `app/Mail/` for the email itself) |
+| runs on a schedule | `app/Console/Commands/` + `routes/console.php` |
+| reacts to a model being saved | `app/Observers/` |
+| is a tiny reusable helper (money parsing) | `app/Support/` |
+| is a screen | `resources/js/pages/<area>/` |
+| is a piece reused by screens of one area | `resources/js/components/<area>/` |
+| is reused by every area | `resources/js/components/` (top level) |
+
+### 3.1.2 Feature by feature
+
+**F0 — Platform & multi-tenancy** (Phases 0, 1, 2, 11)
+
+| Layer | Files | Status |
+|---|---|---|
+| Config | `config/tenancy.php` (Cache + Queue bootstrappers), `bootstrap/providers.php` | ✅ |
+| Providers | `app/Providers/TenancyServiceProvider.php`, `AppServiceProvider.php` (`Model::shouldBeStrict`) | ✅ |
+| Routes | `routes/web.php` (every app route), `routes/auth.php`, `routes/settings.php` | ✅ 🔧 each phase adds routes |
+| Model | `app/Models/Tenant.php` (+ `invoice_prefix`, `currency`, `default_payment_terms_days`) | ✅ 🔧 2 |
+| Migrations | `create_tenants_table`, `add_tenancy_columns` · `add_settings_to_tenants_table` | ✅ · ⬜ 2 |
+| Middleware | `InitializeTenancyByUser.php`, `HandleInertiaRequests.php` (shares `tenant` lazily, `flash`) | ✅ |
+| Tests | `tests/TestCase.php` (tenant helpers) ✅ · `Feature/Tenancy/TenancyMiddlewareTest.php` ✅ · `Feature/Tenancy/TenantIsolationTest.php` ⬜ 2 · `Feature/Tenancy/CrossTenantRoutesTest.php` ⬜ 11 | |
+
+**F1 — Authentication** (Phase 1) — done
+
+| Layer | Files |
+|---|---|
+| Controllers | `Http/Controllers/Auth/AuthenticatedSessionController.php`, `ConfirmablePasswordController.php` ✅ |
+| Requests | `Http/Requests/Auth/LoginRequest.php` ✅ |
+| Model | `Models/User.php` (`BelongsToTenant`; `email` globally `UNIQUE`; indexed `tenant_id`) ✅ |
+| Routes | `routes/auth.php`, `routes/settings.php` ✅ |
+| Pages | `pages/auth/Login.vue`, `pages/settings/*` ✅ |
+| Tests | `Feature/Auth/AuthenticationTest.php`, `PasswordConfirmationTest.php`, `Feature/Settings/*` ✅ |
+
+**F2 — Database schema, enums & factories** (Phase 2)
+
+| Layer | Files |
+|---|---|
+| Migrations | `create_customers_table`, `create_invoices_table`, `create_invoice_items_table`, `create_payments_table`, `create_invoice_email_logs_table` (CHECK constraints via `DB::statement`) |
+| Enums | `app/Enums/InvoiceState.php` (draft / issued / void), `InvoiceStatus.php` (unpaid / partial / paid), `PaymentMethod.php`, `InvoiceEmailEvent.php` (issued / overdue), each with `label()` |
+| Models | `app/Models/Customer.php`, `Invoice.php`, `InvoiceItem.php`, `Payment.php`, `InvoiceEmailLog.php` |
+| Factories | `TenantFactory.php`, `CustomerFactory.php`, `InvoiceFactory.php` (`withItems()`, `issued()`, `partial()`, `paid()`, `overdue()`, `void()`), `InvoiceItemFactory.php`, `PaymentFactory.php` · `UserFactory.php` ✅ 🔧 |
+| Docs | `docs/ERD.md` |
+
+**F3 — Customers** (Phase 3)
+
+| Layer | Files |
+|---|---|
+| Controller | `Http/Controllers/CustomerController.php` (resource + `restore`) |
+| Requests | `Http/Requests/Customers/StoreCustomerRequest.php`, `UpdateCustomerRequest.php` |
+| Policy | `app/Policies/CustomerPolicy.php` |
+| Pages | `pages/customers/Index.vue` (table + search box), `Form.vue` (create and edit), `Show.vue` (customer's invoices) |
+| Shared components (first used here) | `components/EmptyState.vue`, `Pagination.vue`, `FlashMessage.vue` |
+| Tests | `Feature/Customers/CustomerManagementTest.php` |
+
+**F4 — Invoices** (Phase 4)
+
+| Layer | Files |
+|---|---|
+| Controller | `Http/Controllers/InvoiceController.php` (resource + `issue`, `void`) |
+| Requests | `Http/Requests/Invoices/StoreInvoiceRequest.php`, `UpdateInvoiceRequest.php`, `VoidInvoiceRequest.php` (reason) |
+| Data | `app/Data/InvoiceData.php`, `InvoiceItemData.php` |
+| Actions | `app/Actions/Invoices/CreateInvoiceAction.php`, `UpdateInvoiceAction.php`, `IssueInvoiceAction.php` (assigns `IV-00001`), `VoidInvoiceAction.php`, `DeleteDraftInvoiceAction.php` |
+| Service | `app/Services/InvoiceCalculator.php` (line totals, subtotal, total — integer maths) |
+| Support | `app/Support/Money.php` (`"125.50"` ↔ `12550`, no floats) |
+| Model logic | `Invoice::recalculatePaymentState()`; scopes `issued()`, `outstanding()`, `overdue()`; accessors `is_overdue`, `display_status`, `balance_cents` |
+| Policy | `app/Policies/InvoicePolicy.php` (`update`, `issue`, `void`, `delete`) |
+| Pages | `pages/invoices/Index.vue` (status filter dropdown), `Form.vue` (create and edit, item rows inline), `Show.vue` |
+| Components | `components/StatusBadge.vue` |
+| Composable | `composables/useMoney.ts` (format cents for display) |
+| Tests | `Unit/InvoiceCalculatorTest.php`, `Unit/MoneyTest.php`, `Feature/Invoices/InvoiceCreationTest.php`, `InvoiceLifecycleTest.php` (issue, numbering, edit lock, void, delete draft) |
+
+**F5 — Payments** (Phase 5)
+
+| Layer | Files |
+|---|---|
+| Controller | `Http/Controllers/PaymentController.php` (`index`, `store`, `void`) |
+| Requests | `Http/Requests/Payments/StorePaymentRequest.php`, `VoidPaymentRequest.php` |
+| Data | `app/Data/PaymentData.php` |
+| Actions | `app/Actions/Payments/RecordPaymentAction.php` (transaction + `lockForUpdate` + balance check), `VoidPaymentAction.php` |
+| Exceptions | `app/Exceptions/OverpaymentException.php`, `InvoiceNotPayableException.php` (rendered as a 422 error on `amount`) |
+| Pages | `pages/payments/Index.vue` (all payments, date filter); the payment form and payment history are written directly in `pages/invoices/Show.vue` |
+| Tests | `Feature/Payments/PaymentProcessingTest.php` (partial, full, overpayment, zero/negative, paid/draft/void invoice, other tenant, void payment), `PaymentConcurrencyTest.php` (racing payments, DB constraint) |
+
+**F6 — Overdue & scheduler** (Phase 6)
+
+| Layer | Files |
+|---|---|
+| Command | `app/Console/Commands/MarkOverdueInvoices.php` (`invoices:mark-overdue`, refuses to run without a tenant) |
+| Schedule | `routes/console.php` → `tenants:run invoices:mark-overdue`, daily 00:05 |
+| Tests | `Feature/Invoices/OverdueLogicTest.php`, `Feature/Scheduler/MarkOverdueInvoicesTest.php` (2 tenants, run twice, no tenant) |
+
+**F7 — Queued emails** (Phase 7)
+
+| Layer | Files |
+|---|---|
+| Job | `app/Jobs/SendInvoiceEmail.php` (idempotent via `invoice_email_logs`; `tries`, `backoff`, `ShouldBeUnique`) |
+| Mail | `app/Mail/InvoiceIssuedMail.php`, `InvoiceOverdueMail.php` |
+| Templates | `resources/views/mail/invoices/issued.blade.php`, `overdue.blade.php` |
+| UI | small "Emails sent" list on `pages/invoices/Show.vue` |
+| Tests | `Feature/Jobs/SendInvoiceEmailTest.php` (once per event, retry after crash, tenant context, after commit) |
+
+**F8 — Dashboard & caching** (Phase 8)
+
+| Layer | Files |
+|---|---|
+| Controller | `Http/Controllers/DashboardController.php` (replaces the closure route) |
+| Services | `app/Services/DashboardStatsService.php` (one SQL query with `FILTER`), `DashboardCache.php` (`get`, `flush`) |
+| Observers | `app/Observers/InvoiceObserver.php`, `PaymentObserver.php` (flush cache after commit; registered with `#[ObservedBy]`) |
+| Page | `pages/Dashboard.vue` ✅ 🔧 (4 simple cards using the starter kit `Card`) |
+| Tests | `Feature/Dashboard/DashboardTest.php` (values, cached, invalidation, tenant separation), replacing `Feature/DashboardTest.php` ✅ |
+
+**F9 — Reports** (Phase 9)
+
+| Layer | Files |
+|---|---|
+| Controller | `Http/Controllers/ReportController.php` (`sales`, `outstanding`, `customers`) |
+| Request | `Http/Requests/Reports/DateRangeRequest.php` |
+| Services | `app/Services/Reports/SalesReport.php`, `OutstandingInvoicesReport.php` (with aging buckets), `CustomerSummaryReport.php` |
+| Pages | `pages/reports/Sales.vue`, `Outstanding.vue`, `CustomerSummary.vue` (date inputs + plain tables) |
+| Tests | `Feature/Reports/ReportsTest.php` |
+
+**F10 — Seed data & performance** (Phase 10)
+
+| Layer | Files |
+|---|---|
+| Seeders | `database/seeders/DatabaseSeeder.php` ✅ 🔧, `DemoTenantSeeder.php`, `PerformanceSeeder.php` (chunked bulk inserts) |
+| Docs | performance results in `docs/ARCHITECTURE.md` |
+
+**F11 — Documentation** (Phases 2, 6, 11)
+
+`README.md` ✅ 🔧 · `docs/ERD.md` · `docs/ARCHITECTURE.md` (tenancy, locking, overdue, idempotency, caching, performance)
+
+### 3.1.3 Full tree
+
 ```
 SaaS-Platform/
 ├── app/
 │   ├── Actions/
-│   │   ├── Invoices/{CreateInvoiceAction,UpdateInvoiceAction,IssueInvoiceAction,VoidInvoiceAction,DeleteDraftInvoiceAction}.php
-│   │   └── Payments/RecordPaymentAction.php
-│   ├── Console/Commands/MarkOverdueInvoices.php
-│   ├── Data/{InvoiceData,InvoiceItemData,PaymentData}.php
-│   ├── Enums/{InvoiceStatus,InvoiceEmailEvent,PaymentMethod}.php
-│   ├── Exceptions/OverpaymentException.php
+│   │   ├── Invoices/{Create,Update,Issue,Void,DeleteDraft}InvoiceAction.php     ⬜ 4
+│   │   └── Payments/{Record,Void}PaymentAction.php                              ⬜ 5
+│   ├── Console/Commands/MarkOverdueInvoices.php                                 ⬜ 6
+│   ├── Data/{Invoice,InvoiceItem,Payment}Data.php                               ⬜ 4–5
+│   ├── Enums/{InvoiceState,InvoiceStatus,PaymentMethod,InvoiceEmailEvent}.php   ⬜ 2
+│   ├── Exceptions/{Overpayment,InvoiceNotPayable}Exception.php                  ⬜ 5
 │   ├── Http/
-│   │   ├── Controllers/{Dashboard,Customer,Invoice,Payment,Report}Controller.php
-│   │   ├── Middleware/HandleInertiaRequests.php
-│   │   └── Requests/{Customers,Invoices,Payments,Reports}/…
-│   ├── Jobs/SendInvoiceEmail.php
-│   ├── Mail/{InvoiceIssuedMail,InvoiceOverdueMail}.php
-│   ├── Models/{Tenant,User,Customer,Invoice,InvoiceItem,Payment,InvoiceEmailLog}.php
-│   ├── Observers/{InvoiceObserver,PaymentObserver}.php
-│   ├── Policies/{CustomerPolicy,InvoicePolicy}.php
-│   ├── Providers/{AppServiceProvider,TenancyServiceProvider}.php
+│   │   ├── Controllers/
+│   │   │   ├── Auth/…   Settings/…                                              ✅ 1
+│   │   │   ├── CustomerController.php                                           ⬜ 3
+│   │   │   ├── InvoiceController.php                                            ⬜ 4
+│   │   │   ├── PaymentController.php                                            ⬜ 5
+│   │   │   ├── DashboardController.php                                          ⬜ 8
+│   │   │   └── ReportController.php                                             ⬜ 9
+│   │   ├── Middleware/HandleInertiaRequests.php                                 ✅ 1
+│   │   └── Requests/
+│   │       ├── Auth/LoginRequest.php   Settings/…                               ✅ 1
+│   │       ├── Customers/{Store,Update}CustomerRequest.php                      ⬜ 3
+│   │       ├── Invoices/{Store,Update,Void}InvoiceRequest.php                   ⬜ 4
+│   │       ├── Payments/{Store,Void}PaymentRequest.php                          ⬜ 5
+│   │       └── Reports/DateRangeRequest.php                                     ⬜ 9
+│   ├── Jobs/SendInvoiceEmail.php                                                ⬜ 7
+│   ├── Mail/{InvoiceIssued,InvoiceOverdue}Mail.php                              ⬜ 7
+│   ├── Models/
+│   │   ├── Tenant.php   User.php                                                ✅ 1
+│   │   └── Customer.php  Invoice.php  InvoiceItem.php  Payment.php  InvoiceEmailLog.php   ⬜ 2
+│   ├── Observers/{Invoice,Payment}Observer.php                                  ⬜ 8
+│   ├── Policies/{Customer,Invoice}Policy.php                                    ⬜ 3, 4
+│   ├── Providers/{App,Tenancy}ServiceProvider.php                               ✅ 1
 │   ├── Services/
-│   │   ├── InvoiceCalculator.php
-│   │   ├── DashboardStatsService.php
-│   │   ├── DashboardCache.php
-│   │   └── Reports/{SalesReport,OutstandingInvoicesReport,CustomerSummaryReport}.php
-│   └── Support/Money.php
-├── config/tenancy.php
+│   │   ├── InvoiceCalculator.php                                                ⬜ 4
+│   │   ├── DashboardStatsService.php   DashboardCache.php                       ⬜ 8
+│   │   └── Reports/{Sales,OutstandingInvoices,CustomerSummary}Report.php        ⬜ 9
+│   └── Support/Money.php                                                        ⬜ 4
+├── bootstrap/{app,providers}.php                                                ✅ 🔧 3 (error pages)
+├── config/tenancy.php                                                           ✅ 1
 ├── database/
 │   ├── factories/
+│   │   ├── UserFactory.php                                                      ✅ 🔧 2
+│   │   └── {Tenant,Customer,Invoice,InvoiceItem,Payment}Factory.php             ⬜ 2
 │   ├── migrations/
-│   └── seeders/{DatabaseSeeder,DemoTenantSeeder,PerformanceSeeder}.php
+│   │   ├── users, cache, jobs, tenants, add_tenancy_columns            ✅ 1
+│   │   └── add_settings_to_tenants, create_{customers,invoices,invoice_items,payments,invoice_email_logs}   ⬜ 2
+│   └── seeders/
+│       ├── DatabaseSeeder.php                                                   ✅ 🔧 10
+│       └── {DemoTenant,Performance}Seeder.php                                   ⬜ 10
 ├── resources/
 │   ├── js/
-│   │   ├── components/{ui/,DataTable,EmptyState,Pagination,FlashToast,StatusBadge,MoneyInput,InvoiceItemsEditor}.vue
-│   │   ├── composables/useMoney.ts
-│   │   ├── layouts/AppLayout.vue
+│   │   ├── components/
+│   │   │   ├── ui/…   App*.vue   Nav*.vue …                                     ✅ starter kit
+│   │   │   ├── {EmptyState,Pagination,FlashMessage}.vue                         ⬜ 3
+│   │   │   └── StatusBadge.vue                                                  ⬜ 4
+│   │   ├── composables/useMoney.ts                                              ⬜ 4
+│   │   ├── layouts/                                                             ✅ starter kit
 │   │   ├── pages/
-│   │   │   ├── auth/Login.vue
-│   │   │   ├── Dashboard.vue
-│   │   │   ├── Error.vue
-│   │   │   ├── customers/{Index,Create,Edit,Show}.vue
-│   │   │   ├── invoices/{Index,Create,Edit,Show}.vue
-│   │   │   ├── payments/Index.vue
-│   │   │   └── reports/{Sales,Outstanding,CustomerSummary}.vue
-│   │   └── types/index.d.ts
-│   └── views/mail/invoices/{created,overdue}.blade.php
-├── routes/{web,tenant,console}.php
+│   │   │   ├── auth/Login.vue   settings/…                                     ✅ 1
+│   │   │   ├── Dashboard.vue                                                    ✅ 🔧 8
+│   │   │   ├── customers/{Index,Form,Show}.vue                                  ⬜ 3
+│   │   │   ├── invoices/{Index,Form,Show}.vue                                   ⬜ 4
+│   │   │   ├── payments/Index.vue                                               ⬜ 5
+│   │   │   └── reports/{Sales,Outstanding,CustomerSummary}.vue                  ⬜ 9
+│   │   └── types/index.ts                                                       ✅ 🔧 (Customer, Invoice, Payment types)
+│   └── views/
+│       ├── app.blade.php                                                        ✅
+│       └── mail/invoices/{issued,overdue}.blade.php                             ⬜ 7
+├── routes/
+│   ├── web.php   auth.php   settings.php                                        ✅ 🔧 every phase
+│   └── console.php                                                              ✅ 🔧 6
 ├── tests/
-│   ├── TestCase.php
-│   ├── Feature/{Auth,Tenancy,Customers,Invoices,Payments,Jobs,Dashboard,Reports}/…
-│   └── Unit/InvoiceCalculatorTest.php
-├── docker/postgres/init/01-create-testing-db.sql
-├── docker-compose.yml
-├── docs/{ERD,ARCHITECTURE}.md
-├── PLAN.md
-└── README.md
+│   ├── TestCase.php   Pest.php                                                  ✅ 1
+│   ├── Unit/{InvoiceCalculator,Money}Test.php                                   ⬜ 4
+│   └── Feature/
+│       ├── Auth/   Settings/                                                    ✅ 1
+│       ├── Tenancy/{TenantIsolation,CrossTenantRoutes}Test.php                  ⬜ 2, 11
+│       ├── Customers/CustomerManagementTest.php                                 ⬜ 3
+│       ├── Invoices/{InvoiceCreation,InvoiceLifecycle,OverdueLogic}Test.php     ⬜ 4, 6
+│       ├── Payments/{PaymentProcessing,PaymentConcurrency}Test.php              ⬜ 5
+│       ├── Scheduler/MarkOverdueInvoicesTest.php                                ⬜ 6
+│       ├── Jobs/SendInvoiceEmailTest.php                                        ⬜ 7
+│       ├── Dashboard/DashboardTest.php                                          ⬜ 8 (replaces Feature/DashboardTest.php)
+│       └── Reports/ReportsTest.php                                              ⬜ 9
+├── docker/postgres/init/01-create-testing-db.sql                                ✅ 0
+├── docker-compose.yml                                                           ✅ 0
+├── docs/{ERD,ARCHITECTURE}.md                                                   ⬜ 2, 6, 11
+├── AGENTS.md   PLAN.md                                                          ✅
+└── README.md                                                                    ✅ 🔧 11
 ```
 
-## 3.2 Routes (all in `routes/tenant.php`, behind `auth`)
+### 3.1.4 Spec requirement → where it lives
+
+| Spec requirement (assessment PDF) | Main files |
+|---|---|
+| 1 Login / logout | `Auth/AuthenticatedSessionController`, `pages/auth/Login.vue` |
+| 2 Customer CRUD | `CustomerController`, `Requests/Customers/*`, `pages/customers/*` |
+| 3 Invoices with items, computed totals | `Actions/Invoices/*`, `Services/InvoiceCalculator`, `pages/invoices/*` |
+| 3 Overdue computed, not stored | `Invoice::scopeOverdue`, `is_overdue` / `display_status` accessors |
+| 4 Payments, no overpayment, automatic status | `StorePaymentRequest`, `RecordPaymentAction`, `Invoice::recalculatePaymentState()`, DB `CHECK` |
+| 5 Dashboard | `DashboardStatsService`, `DashboardController`, `pages/Dashboard.vue` |
+| 6 Reports | `Services/Reports/*`, `ReportController`, `pages/reports/*` |
+| 7 Multi-tenancy (queries, relationships, jobs, scheduler) | `BelongsToTenant` on every model, `config/tenancy.php`, `tenants:run`, `Feature/Tenancy/*` |
+| 8 Redis queue, idempotent emails | `Jobs/SendInvoiceEmail`, `invoice_email_logs` |
+| 9 Redis cache per tenant + invalidation | `DashboardCache`, `Observers/*` |
+| 10 Daily scheduler | `Console/Commands/MarkOverdueInvoices`, `routes/console.php` |
+| 11 Required tests (auth, invoice, payment, overdue) | `tests/Feature/{Auth,Invoices,Payments}/*` |
+| 12–13 Bonus performance & seeding | indexes in the migrations, `PerformanceSeeder`, `docs/ARCHITECTURE.md` |
+| Deliverables | `README.md`, `docs/ERD.md`, `docs/ARCHITECTURE.md`, seeders |
+
+## 3.2 Routes (all in `routes/web.php`, behind `auth` + `InitializeTenancyByUser`)
 
 | Method | URL | Controller | Page |
 |---|---|---|---|
