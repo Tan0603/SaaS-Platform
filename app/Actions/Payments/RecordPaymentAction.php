@@ -48,7 +48,6 @@ class RecordPaymentAction
             $invoice->recalculatePaymentState();
 
             // Phase 7: dispatch the optional "payment receipt" email after commit (idempotent per payment).
-            // Phase 8: forget the tenant's dashboard cache here (or via an observer).
 
             return $payment;
         });

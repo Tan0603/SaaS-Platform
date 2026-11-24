@@ -114,3 +114,45 @@ not initialised, so a direct `php artisan invoices:mark-overdue` cannot touch ev
 For each overdue invoice without `overdue_notified_at` it stamps that column and queues one overdue email job.
 It never changes `status`: overdue stays computed. The `overdue_notified_at` marker (plus the unique log row) makes
 the daily run safe to repeat.
+
+## Dashboard caching
+
+The dashboard shows four numbers per tenant, all from one SQL statement (`DashboardStatsService`, `FILTER` aggregates
+plus a tenant-scoped payments sub-select; no PHP loops). Only issued invoices and non-voided payments count; drafts,
+void invoices and voided payments never do.
+
+| Number | Definition |
+|---|---|
+| Revenue this month | sum of non-voided payments with `paid_at` in the current calendar month (cash basis) |
+| Outstanding | sum of `total - paid` of issued invoices that are not paid |
+| Paid | sum of `total` of issued paid invoices |
+| Overdue | outstanding balance of issued, not-paid invoices with `due_date < today` (same rule as `Invoice::overdue()`) |
+
+Dates are computed in PHP and bound as parameters (not `CURRENT_DATE`), so the dashboard and the invoice list always
+agree, including under `travelTo()` in tests.
+
+**Cache.** `DashboardCache` stores the result (cards and charts together) for 10 minutes under `dashboard:data:<today>`. `CacheTenancyBootstrapper`
+tags every call with the current tenant, so Acme and Globex never share an entry. The date in the key makes the overdue
+number change at midnight without any job. With no tenant initialised nothing is cached or flushed.
+
+**Invalidation.** `InvoiceObserver` and `PaymentObserver` (created / updated / deleted) call
+`DB::afterCommit(fn () => DashboardCache::flush())`. Waiting for the commit matters: flushing inside the transaction
+would let a concurrent request re-cache the old numbers before the new ones are visible, and a rolled-back change
+would flush for nothing. `flush()` forgets today's key only (older dated keys expire by TTL), which is why a version
+counter was not needed. `invoices:mark-overdue` uses `saveQuietly()` (no observers), so it flushes explicitly.
+Remaining gap: a request that read the database just before a commit and writes the cache just after the flush can
+keep slightly old numbers until the 10-minute TTL ends.
+
+**Charts.** `DashboardChartsService` adds three charts to the same cached payload (`{stats, charts}`), so one flush
+invalidates cards and charts together. Each is one grouped SQL statement on the tenant-scoped models; the only PHP loop
+is over the 12 month buckets (zero-filling). Drafts, void invoices and voided payments are excluded everywhere.
+
+| Chart | Definition |
+|---|---|
+| Invoiced vs collected | last 12 calendar months (this month and the 11 before): `SUM(total)` of issued invoices by `issue_date`, and `SUM(amount)` of non-voided payments by `paid_at`, `GROUP BY date_trunc('month', ...)` |
+| Invoices by status | issued invoices in four non-overlapping groups, exactly like the badges / list filters: overdue (past due, not paid), paid, and unpaid / partial that are not overdue (one `FILTER` query; count and sum of totals) |
+| Top 5 customers | `SUM(total - paid)` of issued, not-paid invoices per customer (archived customers included), largest first; the customers join repeats `tenant_id` |
+
+**Live refresh.** `Dashboard.vue` uses Inertia's `usePoll(30000)` to reload only the `stats`, `charts` and `month` props
+every 30 seconds (paused while the tab is hidden). The server answers from the cache, so polling is cheap; a new
+payment or invoice flushes the cache and shows up on the next poll. The page shows both the data time and the last check.

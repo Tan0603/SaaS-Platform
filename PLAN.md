@@ -19,7 +19,7 @@ How to use this file:
 | 5 — Payments | ✅ Done | `RecordPaymentAction` (transaction + `lockForUpdate` + fresh SUM) and `VoidPaymentAction`, Overpayment/InvoiceNotPayable exceptions (422 on `amount`), `StorePaymentRequest`, `PaymentPolicy` + `InvoicePolicy::recordPayment`, `PaymentController`, payment form/history on invoice page, `payments/Index.vue`. 159 tests / 1045 assertions green (all phases so far); Pint + build OK. Browser not verified. Not committed yet |
 | 6 — Overdue & scheduler | ✅ Done | Overdue scope/accessor/filter/badge (`OverdueLogicTest`), `invoices:mark-overdue` (refuses to run without a tenant), scheduled via `tenants:run` daily 00:05 (`schedule:list` verified), `MarkOverdueInvoicesTest` (2 tenants, twice, no tenant, schedule). Not committed yet |
 | 7 — Queued emails | ✅ Done | `SendInvoiceEmail` job (idempotent via `invoice_email_logs`, `tries`/`backoff`, `ShouldBeUnique` kept with tenant-scoped id), issued + overdue mailables, dispatched `afterCommit` from `IssueInvoiceAction`, email history panel on invoice page, `SendInvoiceEmailTest` (real-queue tenant context). 185 tests green. Not committed yet |
-| 8 — Dashboard & cache | ⬜ | |
+| 8 — Dashboard & cache | ✅ Done | `DashboardStatsService` (one `FILTER` query, tenant-scoped payments sub-select, PHP-bound dates), `DashboardCache` (per-tenant via CacheTenancyBootstrapper, dated key, 600 s, forget today's key), Invoice/Payment observers (`afterCommit` flush) + explicit flush in `invoices:mark-overdue`, `DashboardController`, 4-card `Dashboard.vue` with empty state. `Feature/Dashboard/DashboardTest` (19 tests; uses the real Redis store with a test prefix). 203 tests / 1478 assertions green; Pint + build OK. Performance with seed data waits for Phase 10. Not committed yet |
 | 9 — Reports | ⬜ | |
 | 10 — Seed & performance | ⬜ | |
 | 11 — Hardening & docs | ⬜ | |
@@ -766,6 +766,8 @@ FROM invoices WHERE tenant_id = :tenant;
 ```
 (Written with the query builder on the tenant-scoped models, so `tenant_id` comes from the scope. The real query also adds `state = 'issued'` to the invoice filters and `voided_at IS NULL` to the payments sub-query — B1, B8.)
 
+**Charts and live refresh (added):** three SQL-aggregated charts (invoiced vs collected over 12 months, invoices by status, top 5 customers by outstanding balance; `DashboardChartsService`, Chart.js via vue-chartjs) are stored in the same cached payload as the cards, so one flush clears both. `Dashboard.vue` polls with Inertia `usePoll` every 30 seconds (`only: stats, charts, month`). The demo seeder spreads 60 invoices per tenant over the last 12 months.
+
 **Caching:**
 - `Cache::remember('dashboard:stats:'.today()->toDateString(), 600, fn () => …)`. `CacheTenancyBootstrapper` automatically separates the cache per tenant, so Acme and Globex can never read each other's numbers. The date in the key means overdue numbers refresh at midnight.
 - **Invalidation:** `InvoiceObserver` and `PaymentObserver` (`created`, `updated`, `deleted`) call `DB::afterCommit(fn () => DashboardCache::flush())`. Waiting for commit stops a request from re-caching old numbers while the transaction is still open.
@@ -783,7 +785,8 @@ FROM invoices WHERE tenant_id = :tenant;
 - tenant A's dashboard never includes tenant B's numbers, even with a warm cache
 
 **Exit criteria**
-- [ ] Tests green · dashboard is fast with the performance seed (Phase 10)
+- [x] Tests green
+- [ ] Dashboard is fast with the performance seed (Phase 10)
 
 ---
 
