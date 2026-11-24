@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\CustomerController;
 use App\Http\Middleware\InitializeTenancyByUser;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -19,6 +20,10 @@ require __DIR__.'/auth.php';
 
 Route::middleware(['auth', InitializeTenancyByUser::class])->group(function () {
     Route::get('dashboard', fn () => Inertia::render('Dashboard'))->name('dashboard');
+
+    Route::resource('customers', CustomerController::class);
+    Route::patch('customers/{customer}/restore', [CustomerController::class, 'restore'])->withTrashed()->name('customers.restore');
+    Route::delete('customers/{customer}/permanent', [CustomerController::class, 'forceDestroy'])->withTrashed()->name('customers.force-destroy');
 
     require __DIR__.'/settings.php';
 });

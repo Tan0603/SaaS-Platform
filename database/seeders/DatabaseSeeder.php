@@ -2,6 +2,8 @@
 
 namespace Database\Seeders;
 
+use App\Models\Customer;
+use App\Models\Invoice;
 use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Database\Seeder;
@@ -25,6 +27,15 @@ class DatabaseSeeder extends Seeder
                     'name' => 'Admin',
                     'email' => "admin@{$id}.test",
                 ]);
+
+                // Small demo data set; the large performance seed comes in a later phase.
+                $customers = Customer::factory()->count(10)->create();
+                foreach ($customers->take(3) as $customer) {
+                    Invoice::factory()->issued()->create(['customer_id' => $customer->id]);
+                }
+                Invoice::factory()->partial()->create(['customer_id' => $customers[3]->id]);
+                Invoice::factory()->paid()->create(['customer_id' => $customers[4]->id]);
+                Invoice::factory()->overdue()->create(['customer_id' => $customers[5]->id]);
             });
         }
     }

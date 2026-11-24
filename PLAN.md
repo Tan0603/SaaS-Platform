@@ -12,10 +12,10 @@ How to use this file:
 | Phase | Status | Notes |
 |---|---|---|
 | 0 — Setup & environment | ✅ Done | Docker services healthy, migrations run, build OK, Mailpit at :8025 |
-| 1 — Multi-tenancy & login | ✅ Done | One site `localhost:8000`; tenant from logged-in user; 26 tests / 117 assertions green; Pint OK. Not committed yet |
-| 2 — Schema, models, factories | ⬜ Next | |
-| 3 — Customers | ⬜ | |
-| 4 — Invoices | ⬜ | |
+| 1 — Multi-tenancy & login | ✅ Done | One site `localhost:8000`; tenant from logged-in user; 26 tests / 117 assertions green; Pint OK. Merged to staging (PR #2) |
+| 2 — Schema, models, factories | ✅ Done | 6 migrations with all indexes + CHECK constraints, enums, models, factories (consistent paid/partial/overdue states), `docs/ERD.md`; isolation + constraint tests green. Not committed yet |
+| 3 — Customers | ✅ Done | 57 tests / 319 assertions green (with Phase 2). CRUD + archive/restore + permanent delete (only when no invoices), tenant-scoped validation, policy, Vue pages + shared components; tenancy now initialised before route-model binding (priority fix in `bootstrap/app.php`). "Archived customer cannot be picked" test moves to Phase 4. Not committed yet |
+| 4 — Invoices | ⏭️ Next | |
 | 5 — Payments | ⬜ | |
 | 6 — Overdue & scheduler | ⬜ | |
 | 7 — Queued emails | ⬜ | |
@@ -100,7 +100,7 @@ tenants ─┬─< users
 | Table | Important columns | Notes |
 |---|---|---|
 | `tenants` | id, name, invoice_prefix, currency, default_payment_terms_days | company settings (B3, B5, B10) |
-| `customers` | name, email, phone, address, registration_no, payment_terms_days | email unique **per tenant**; archived = soft deleted |
+| `customers` | name, email, phone, address, registration_no, payment_terms_days | email unique **per tenant**; archived = soft deleted; permanent delete only with no invoices |
 | `invoices` | customer_id, number, issue_date, due_date, state, status, subtotal_cents, total_cents, amount_paid_cents, issued_at, voided_at, overdue_notified_at | `amount_paid_cents` is a stored copy of `SUM(payments)`, refreshed by one method only |
 | `invoice_items` | invoice_id, description, quantity, unit_price_cents, line_total_cents | `line_total_cents` = quantity × unit price, computed by the server |
 | `payments` | invoice_id, amount_cents, paid_at, method, reference, voided_at, void_reason | `amount_cents > 0` enforced by the database; voided payments don't count |
@@ -203,7 +203,7 @@ The assessment asks us to design the business logic ourselves, using Bukku (a Ma
 | B6 | **Recording payments** | "Add Payment" on the invoice, or a separate Sales Payment that can cover several invoices | We record payments **from the invoice** (one payment → one invoice). Multi-invoice allocation is out of scope and listed as a future improvement. Fields: date, amount, method (`cash`, `bank_transfer`, `cheque`, `card`, `e_wallet`), reference no. |
 | B7 | **Overpayment** | Bukku accepts the extra money as customer credit to refund or offset later | The spec says overpayment must be **impossible**, so we **block** it (3 layers, Section 1.5). We note customer credit as a future improvement in the README. |
 | B8 | **Undoing a payment** | Transactions are voided, not deleted | Payments are **voided** (`voided_at`, `void_reason`), never deleted. Voided payments are excluded from `SUM`, and `recalculatePaymentState()` runs again (e.g. `paid` → `partial`). The history stays visible with a "Void" badge. |
-| B9 | **Customers** | Contact has default terms, currency, TIN (needed for e-invoice) | Fields: name, email, phone, billing address, `registration_no` (SSM/TIN, optional), `payment_terms_days`. A customer with invoices cannot be deleted, only **archived** (soft delete): hidden from the invoice customer picker, history kept, can be restored. |
+| B9 | **Customers** | Contact has default terms, currency, TIN (needed for e-invoice) | Fields: name, email, phone, billing address, `registration_no` (SSM/TIN, optional), `payment_terms_days`. **Delete or archive** (same as Zoho Books / Clear Books; Bukku voids rather than deletes transactions): a customer with **no invoices** (in any state) can be **deleted permanently**. A customer **with invoices** cannot be deleted, only **archived** (soft delete): hidden from the list and the invoice customer picker, history kept, can be restored. Deleting a customer while moving their invoices to an archive was rejected: the invoices would lose their customer, still count in totals, and break the customer summary report. |
 | B10 | **Currency & tax** | Multi-currency and SST tax codes | Single currency per tenant (`tenants.currency`, default `MYR`). No tax (SST) in scope; `InvoiceCalculator` is the single place to add it later. |
 | B11 | **Emails** | Invoice sent on "save and send"; automatic reminders before due and when overdue; email tracker on the invoice | Emails: **invoice issued** (on issue) and **overdue reminder** (daily job). Optional stretch: **payment receipt**. The invoice page shows an email history from `invoice_email_logs`. |
 | B12 | **Multi-company** | One login can own several companies, switched from a dropdown | Spec model: each user belongs to **one** tenant and reaches it through `users.tenant_id`. Switching companies is out of scope. |
@@ -437,7 +437,7 @@ All `tenant_id` columns: `foreignId`-style string FK → `tenants.id`, cascade o
 
 ## Phase 3 — Customer management
 
-**Goal:** list, search, create, view, edit and archive customers (Section 1.8 B9).
+**Goal:** list, search, create, view, edit, delete and archive customers (Section 1.8 B9).
 
 **Why:** the simplest CRUD — it sets the pattern (controller → FormRequest → Inertia page) and the shared Vue components every later screen reuses.
 
@@ -468,6 +468,7 @@ UX states the spec asks for:
    ```
 3. `CustomerPolicy` — extra safety: `$user->tenant_id === $customer->tenant_id`.
 4. `destroy` = **archive** (soft delete): allowed even with invoices; the history stays. Archived customers are hidden from the list (filter "Show archived") and from the invoice customer picker. `restore` route brings one back.
+   `forceDestroy` (`DELETE /customers/{customer}/permanent`) = **permanent delete**, allowed only when the customer has no invoices; otherwise it redirects back with "archive instead". The `invoices.customer_id` FK is `RESTRICT`, so the database also refuses it if an invoice is created at the same moment. The list uses `withCount('invoices')` to show **Delete** (no invoices) or **Archive** (has invoices); archived rows show **Restore** and, if they have no invoices, **Delete**.
 5. Form fields include `registration_no` and `payment_terms_days` (select: Due on receipt / 7 / 14 / 30 / 60 days).
 6. Shared Vue (keep it to these): `EmptyState.vue`, `Pagination.vue`, `FlashMessage.vue` (shows the shared `flash` prop as a simple alert). Tables are plain `<table>` markup; Laravel's default 404/403 pages are fine.
 7. Pages: `customers/Index.vue`, `Form.vue` (one page for create and edit), `Show.vue` (lists that customer's invoices).
@@ -476,6 +477,7 @@ UX states the spec asks for:
 - create / update / delete happy paths
 - validation: name required, invalid email, email duplicated within the same tenant (but allowed in another tenant)
 - archiving a customer with invoices keeps the invoices; archived customer cannot be picked for a new invoice; restore works
+- permanent delete works with no invoices (active or archived); refused when the customer has invoices; the DB FK refuses it too; another tenant's customer → 404
 - another tenant's customer → 404 on show, edit, update, delete
 
 **Exit criteria**
@@ -934,7 +936,7 @@ After commit: Observers (cache flush) · Jobs (emails, run inside the tenant via
 
 | Layer | Files |
 |---|---|
-| Controller | `Http/Controllers/CustomerController.php` (resource + `restore`) |
+| Controller | `Http/Controllers/CustomerController.php` (resource + `restore` + `forceDestroy`) |
 | Requests | `Http/Requests/Customers/StoreCustomerRequest.php`, `UpdateCustomerRequest.php` |
 | Policy | `app/Policies/CustomerPolicy.php` |
 | Pages | `pages/customers/Index.vue` (table + search box), `Form.vue` (create and edit), `Show.vue` (customer's invoices) |
