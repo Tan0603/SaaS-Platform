@@ -16,7 +16,7 @@ How to use this file:
 | 2 — Schema, models, factories | ✅ Done | 6 migrations with all indexes + CHECK constraints, enums, models, factories (consistent paid/partial/overdue states), `docs/ERD.md`; isolation + constraint tests green. Not committed yet |
 | 3 — Customers | ✅ Done | 57 tests / 319 assertions green (with Phase 2). CRUD + archive/restore + permanent delete (only when no invoices), tenant-scoped validation, policy, Vue pages + shared components; tenancy now initialised before route-model binding (priority fix in `bootstrap/app.php`). "Archived customer cannot be picked" test moves to Phase 4. Not committed yet |
 | 4 — Invoices | ✅ Done | Money, InvoiceCalculator (integer maths), DTOs, Create/Update/Issue/Void/DeleteDraft actions, `Invoice::recalculatePaymentState()`, InvoicePolicy, InvoiceController + Vue pages (Index/Form/Show, StatusBadge). 129 tests / 743 assertions green (with phases 1-3). Not committed yet |
-| 5 — Payments | ⬜ | |
+| 5 — Payments | ✅ Done | `RecordPaymentAction` (transaction + `lockForUpdate` + fresh SUM) and `VoidPaymentAction`, Overpayment/InvoiceNotPayable exceptions (422 on `amount`), `StorePaymentRequest`, `PaymentPolicy` + `InvoicePolicy::recordPayment`, `PaymentController`, payment form/history on invoice page, `payments/Index.vue`. 159 tests / 1045 assertions green (all phases so far); Pint + build OK. Browser not verified. Not committed yet |
 | 6 — Overdue & scheduler | 🟡 Partial | Overdue logic done (scope, accessor, list filter, badge, `OverdueLogicTest`, `docs/ARCHITECTURE.md`). `invoices:mark-overdue` command and scheduler pending with Phase 7 |
 | 7 — Queued emails | ⬜ | |
 | 8 — Dashboard & cache | ⬜ | |
@@ -555,7 +555,7 @@ StoreInvoiceRequest (validate) → InvoiceData DTO → CreateInvoiceAction:
   - due date defaults to issue date + customer payment terms
   - an issued invoice with payments cannot be edited (403); without payments it can
   - issued invoices cannot be deleted; voiding needs no active payments; void invoices are excluded from totals
-  - a draft cannot receive payments and sends no email
+  - a draft cannot receive payments *(done in Phase 5: `PaymentProcessingTest`)* and sends no email *(Phase 7)*
 
 **Exit criteria**
 - [x] Multi-item invoices can be created, edited and viewed in the browser
@@ -638,8 +638,9 @@ $this->save();
 - direct DB update making `amount_paid_cents > total_cents` → throws (constraint)
 
 **Exit criteria**
-- [ ] All payment tests green
-- [ ] Section 1.6 re-checked in the review
+- [x] All payment tests green (`PaymentProcessingTest`, `PaymentConcurrencyTest`; full suite 159 green)
+- [ ] Section 1.6 re-checked in the review (reviewer step)
+- [ ] Record / void a payment and the payments screen checked in the browser
 
 ---
 
