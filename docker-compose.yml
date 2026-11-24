@@ -1,7 +1,7 @@
 # Local services for the SaaS Accounting app.
 # Laravel itself runs on your machine (`composer run dev`); these containers
 # provide the database, cache/queue and a fake mail inbox.
-name: saas-platform
+name: saas-accounting
 
 services:
   postgres:

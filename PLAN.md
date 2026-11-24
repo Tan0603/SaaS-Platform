@@ -228,7 +228,7 @@ Each phase has: **Goal · Why · How it works · Steps · Tests · Exit criteria
 | Web server + queue worker + logs + Vite | `composer run dev` (starter-kit script: `php artisan serve`, `queue:listen`, `pail`, `npm run dev`) |
 | Scheduler (daily overdue job) | `php artisan schedule:work` (second terminal) |
 
-`docker-compose.yml` sets `name: saas-platform`, so its containers and volumes never mix with your other projects. Ports can be moved with `FORWARD_DB_PORT`, `FORWARD_REDIS_PORT`, `FORWARD_MAILPIT_PORT` and `FORWARD_MAILPIT_DASHBOARD_PORT` in `.env` if another project already uses them. Stop the other project's containers or change these ports before `docker compose up`.
+`docker-compose.yml` sets `name: saas-accounting`, so Docker Desktop groups its containers and volumes under **saas-accounting** and they never mix with your other projects. Ports can be moved with `FORWARD_DB_PORT`, `FORWARD_REDIS_PORT`, `FORWARD_MAILPIT_PORT` and `FORWARD_MAILPIT_DASHBOARD_PORT` in `.env` if another project already uses them. Stop the other project's containers or change these ports before `docker compose up`.
 
 Browsers resolve `*.localhost` to 127.0.0.1 automatically, so `http://acme.localhost:8000` reaches `php artisan serve` without editing the hosts file (Chrome, Firefox, Edge). Note this in the README.
 
