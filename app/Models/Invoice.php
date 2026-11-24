@@ -93,6 +93,66 @@ class Invoice extends Model
         $query->issued()->where('status', '!=', InvoiceStatus::Paid);
     }
 
+    /**
+     * Filter by what the UI shows (display_status): draft / void / overdue / unpaid / partial / paid.
+     * "unpaid" and "partial" exclude overdue invoices, exactly like the badge does.
+     *
+     * @param  Builder<Invoice>  $query
+     */
+    public function scopeWithDisplayStatus(Builder $query, string $status): void
+    {
+        match ($status) {
+            'draft' => $query->where('state', InvoiceState::Draft),
+            'void' => $query->where('state', InvoiceState::Void),
+            'overdue' => $query->overdue(),
+            'paid' => $query->issued()->where('status', InvoiceStatus::Paid),
+            'unpaid', 'partial' => $query->issued()
+                ->where('status', $status)
+                ->whereDate('due_date', '>=', today()),
+            default => null,
+        };
+    }
+
+    /**
+     * The ONLY place that writes `amount_paid_cents` and `status`.
+     * Sums non-voided payments from the database (never trusts the stored copy). Callers that can race
+     * (payments) lock the invoice row first; the CHECK (amount_paid_cents <= total_cents) is the last guard.
+     */
+    public function recalculatePaymentState(): void
+    {
+        $paid = (int) $this->payments()->active()->sum('amount_cents');
+
+        $this->amount_paid_cents = $paid;
+        $this->status = match (true) {
+            $paid <= 0 => InvoiceStatus::Unpaid,
+            $paid >= $this->total_cents => InvoiceStatus::Paid,
+            default => InvoiceStatus::Partial,
+        };
+
+        $this->save();
+    }
+
+    public function hasActivePayments(): bool
+    {
+        return $this->payments()->active()->exists();
+    }
+
+    /** B4: drafts are editable; issued invoices only while they have no active payments; void never. */
+    public function canBeEdited(): bool
+    {
+        return match ($this->state) {
+            InvoiceState::Draft => true,
+            InvoiceState::Issued => ! $this->hasActivePayments(),
+            default => false,
+        };
+    }
+
+    /** B2: only an issued invoice with no active payments can be voided. */
+    public function canBeVoided(): bool
+    {
+        return $this->state === InvoiceState::Issued && ! $this->hasActivePayments();
+    }
+
     protected function isOverdue(): Attribute
     {
         return Attribute::get(fn (): bool => $this->state === InvoiceState::Issued
